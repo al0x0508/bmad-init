@@ -37,23 +37,29 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 
 1. Fill `docs/prd.md` (you, the human)
 2. `/architect` → produces `docs/architecture.md` + `docs/components/*.md`
-3. `/new-task TASK-001 "Title"` → creates the task
-4. `/research TASK-001` → explore → `tasks/TASK-001/research.md`
-5. `/plan TASK-001` → plan → `tasks/TASK-001/plan.md`
-6. You: review plan.md (10-15 min)
-7. (Optional) `/review TASK-001` → critical review by Claude
-8. `/implement TASK-001` → implement phase by phase
-9. `/sprint` → see next task
-10. Repeat from step 3
+3. You: review architecture.md
+4. `/breakdown` → generates all tasks from architecture
+5. `/research TASK-001` → explore → `tasks/TASK-001/research.md`
+6. `/plan TASK-001` → plan → `tasks/TASK-001/plan.md`
+7. You: review plan.md (10-15 min)
+8. (Optional) `/review TASK-001` → critical review by Claude
+9. `/implement TASK-001` → implement phase by phase
+10. `/sprint` → see next task
+11. Repeat from step 5
+
+### For parallel work
+- `/worktree TASK-XXX` → creates a git worktree for the task
 
 ### Available Commands
+- `/architect` → BMAD mode: analyze the PRD, produce architecture.md
+- `/breakdown` → Generate tasks from architecture (replaces manual /new-task)
 - `/research TASK-XXX` → FIC Phase 1: explore the codebase, produce research.md
 - `/plan TASK-XXX` → FIC Phase 2: read research.md, produce plan.md
 - `/implement TASK-XXX` → FIC Phase 3: read plan.md, implement phase by phase
-- `/architect` → BMAD mode: analyze the PRD, produce architecture.md
-- `/sprint` → View current sprint and next task
-- `/new-task TASK-XXX "Title"` → Create a new task with templates
 - `/review TASK-XXX` → Critical review of a plan.md (BMAD QA)
+- `/sprint` → View current sprint and next task
+- `/new-task TASK-XXX "Title"` → Create a single task manually
+- `/worktree TASK-XXX` → Create git worktree for parallel work
 
 ### Blocking/Unblocking a task
 To block: manually edit `tasks/TASK-XXX/status.md`, set status = `blocked`
@@ -76,6 +82,8 @@ tasks/
     research.md       ← FIC Phase 1
     plan.md           ← FIC Phase 2 (WHAT YOU REVIEW)
     status.md         ← Task status tracking
+  TASK-002/           ← Created by /breakdown or /new-task
+    ...
 src/                  ← Code
 tests/                ← Tests
 ```
@@ -789,6 +797,195 @@ Display a structured report:
 ENDOFFILE
 
 # ============================================================
+# .claude/commands/breakdown.md
+# ============================================================
+write_if_missing ".claude/commands/breakdown.md" <<'ENDOFFILE'
+# /breakdown — Generate Tasks from Architecture
+
+## Instructions
+
+You analyze the architecture and PRD to create a complete task breakdown.
+
+### Preconditions
+Before starting, verify:
+1. `docs/architecture.md` exists and is not the empty template — if it still contains placeholder text like `[ASCII diagram to be generated]` or `[To be completed by /architect]`, say: "Architecture is still a template. Run `/architect` first to generate the architecture."
+2. `docs/prd.md` exists and is not the empty template — if it still contains placeholder text like `[PROJECT NAME]` or `[1-2 sentences describing the project vision]`, say: "The PRD is still a template. Fill `docs/prd.md` with your project requirements first."
+
+### Step 1: Analyze
+1. Read `docs/architecture.md` in full
+2. Read `docs/prd.md` for feature priorities
+3. Identify discrete implementable units:
+   - Foundation/setup tasks (P0)
+   - Core component tasks (P0-P1)
+   - Feature tasks (P1-P2)
+   - Integration tasks (P2)
+
+### Step 2: Design task list
+For each task, determine:
+- Task ID (sequential: TASK-001, TASK-002, ...)
+- Title (concise, action-oriented)
+- Priority (P0 = must do first, P1 = core, P2 = can wait)
+- Dependencies (which tasks must complete first)
+
+Order: dependency-first (foundations before features).
+
+### Step 3: Create tasks
+For each task, create `tasks/[task_id]/` with these files:
+
+#### tasks/[task_id]/status.md
+```markdown
+# Status: [task_id]
+
+## Info
+- Title: [title]
+- Created: [today's date]
+- Priority: [P0/P1/P2]
+
+## Current
+- Status: todo
+- Current phase: —
+- Last completed: —
+- Date: [today's date]
+
+## Phases
+[To be filled by /implement]
+
+## History
+- [today's date] : Created via /breakdown
+```
+
+#### tasks/[task_id]/research.md
+```markdown
+# Research: [task_id] — [title]
+
+> This file will be filled by `/research [task_id]`
+
+## Context
+[To be completed]
+
+## Relevant files identified
+[To be completed]
+
+## Existing patterns to follow
+[To be completed]
+
+## Reusable code
+[To be completed]
+
+## Dependencies and interfaces
+[To be completed]
+
+## Points of attention
+[To be completed]
+
+## Open questions
+[To be completed]
+```
+
+#### tasks/[task_id]/plan.md
+```markdown
+# Plan: [task_id] — [title]
+
+> This file will be filled by `/plan [task_id]`
+> It will then be reviewed by the human before implementation.
+
+## Context
+[To be completed]
+
+## Planned changes
+[To be completed]
+
+## Identified risks
+[To be completed]
+
+## Estimate
+[To be completed]
+```
+
+### Step 4: Populate sprint board
+Write all tasks into `docs/current-sprint.md` under `### Todo`:
+```
+- TASK-XXX — [Title] (Priority: PX)
+```
+Ordered by priority then dependency.
+
+### Step 5: Display summary
+Show the created tasks:
+```
+Tasks created from architecture:
+
+  TASK-001 — [Title] (P0)
+  TASK-002 — [Title] (P0)
+  TASK-003 — [Title] (P1)
+  ...
+
+Sprint board updated: docs/current-sprint.md
+Next step: /research TASK-001
+```
+
+### Rules
+- One task per component or feature (not too granular, not too broad)
+- Max 10 tasks per breakdown — if more are needed, split into multiple sprints
+- Foundation tasks always P0
+- Use the same status.md, research.md, plan.md format as /new-task
+- Human can still add more tasks later with /new-task
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/worktree.md
+# ============================================================
+write_if_missing ".claude/commands/worktree.md" <<'ENDOFFILE'
+# /worktree — Create Git Worktree for a Task
+
+## Required argument
+- `$ARGUMENTS`: task identifier (e.g., TASK-002)
+
+## Instructions
+
+You create a git worktree so the task can be implemented in parallel.
+
+### Preconditions
+Before starting, verify:
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Create the task first with `/new-task` or `/breakdown`."
+2. You are inside a git repository — if not, say: "Not a git repository. Run `git init` first."
+3. No worktree already exists for this task — check with `git worktree list`
+
+### Steps
+
+#### Step 1: Read task info
+Read `tasks/$ARGUMENTS/status.md` to get the task title.
+
+#### Step 2: Derive names
+- Branch name: `feat/[task-id-lowercase]-[slugified-title]`
+  - Example: TASK-002 "API endpoints" → `feat/task-002-api-endpoints`
+  - Slugify: lowercase, replace spaces with hyphens, remove special characters
+- Worktree directory: `../[current-project-directory-name]-[TASK-ID]`
+  - Example: project dir is `my-app`, task is TASK-002 → `../my-app-TASK-002`
+
+#### Step 3: Create worktree
+Run:
+```bash
+git worktree add [directory] -b [branch-name]
+```
+
+#### Step 4: Display result
+```
+Worktree created:
+  Branch:    feat/[task-id]-[slugified-title]
+  Directory: ../[project-name]-[TASK-ID]
+
+To start working:
+  cd ../[project-name]-[TASK-ID] && claude
+  /research [TASK-ID]
+```
+
+### Rules
+- **DO NOT** modify any files other than creating the worktree
+- Branch name must be lowercase with hyphens
+- If the branch already exists (from a previous attempt), use it instead of creating a new one
+ENDOFFILE
+
+# ============================================================
 # docs/prd.md
 # ============================================================
 write_if_missing "docs/prd.md" <<'ENDOFFILE'
@@ -904,5 +1101,5 @@ echo "Next steps:"
 echo "  1. Edit docs/prd.md with your project requirements"
 echo "  2. cd $TARGET && claude"
 echo "  3. /architect           → generate architecture"
-echo "  4. /new-task TASK-001 \"First feature\""
+echo "  4. /breakdown           → generate all tasks"
 echo "  5. /sprint              → see what to do next"

@@ -44,8 +44,8 @@ claude
 # 4. Generate architecture (inside Claude Code)
 /architect
 
-# 5. Create your first task
-/new-task TASK-001 "Setup core module"
+# 5. Review architecture.md, then generate all tasks
+/breakdown
 
 # 6. Research (then start a new session)
 /research TASK-001
@@ -58,7 +58,7 @@ claude
 # 9. Implement
 /implement TASK-001
 
-# 10. Check sprint status
+# 10. Check sprint status and move to next task
 /sprint
 ```
 
@@ -71,40 +71,41 @@ Each `/research`, `/plan`, and `/implement` should run in a **separate Claude Co
 Each task follows a strict state machine. Commands transition between states:
 
 ```
-                ┌──────────┐
-                │ (create) │
-                └─────┬────┘
-                      │ /new-task
-                      ▼
-                ┌──────────┐
-                │   todo   │
-                └─────┬────┘
-                      │ /research
-                      ▼
-             ┌────────────────┐
-             │ research-done  │
-             └───────┬────────┘
-                     │ /plan
-                     ▼
-              ┌─────────────┐
-              │  plan-ready  │◀─────────────────┐
-              └──────┬───────┘                  │
-                     │                    /review (read-only)
-                     │ /implement               │
-                     ▼                          │
-            ┌────────────────┐                  │
-            │  implementing  │──────────────────┘
-            └───────┬────────┘
-                    │
-              ┌─────┴──────┐
-              │            │
-         all phases    (manual)
-         completed     edit status
-              │            │
-              ▼            ▼
-        ┌──────────┐ ┌──────────┐
-        │   done   │ │ blocked  │
-        └──────────┘ └──────────┘
+         ┌──────────┐         ┌─────────────┐
+         │ (create) │         │ (create N)  │
+         └─────┬────┘         └──────┬──────┘
+               │ /new-task           │ /breakdown
+               └──────────┬──────────┘
+                          ▼
+                    ┌──────────┐
+                    │   todo   │
+                    └─────┬────┘
+                          │ /research
+                          ▼
+                 ┌────────────────┐
+                 │ research-done  │
+                 └───────┬────────┘
+                         │ /plan
+                         ▼
+                  ┌─────────────┐
+                  │  plan-ready  │◀─────────────────┐
+                  └──────┬───────┘                  │
+                         │                    /review (read-only)
+                         │ /implement               │
+                         ▼                          │
+                ┌────────────────┐                  │
+                │  implementing  │──────────────────┘
+                └───────┬────────┘
+                        │
+                  ┌─────┴──────┐
+                  │            │
+             all phases    (manual)
+             completed     edit status
+                  │            │
+                  ▼            ▼
+            ┌──────────┐ ┌──────────┐
+            │   done   │ │ blocked  │
+            └──────────┘ └──────────┘
 ```
 
 ### Session Workflow
@@ -146,6 +147,13 @@ bmad-init
 │   └── writes: docs/architecture.md
 │                docs/components/*.md
 │
+├── /breakdown
+│   ├── reads:  docs/architecture.md, docs/prd.md
+│   └── writes: tasks/TASK-*/status.md       (all tasks)
+│                tasks/TASK-*/research.md     (templates)
+│                tasks/TASK-*/plan.md         (templates)
+│                docs/current-sprint.md       (all entries)
+│
 ├── /new-task TASK-001
 │   └── writes: tasks/TASK-001/status.md
 │                tasks/TASK-001/research.md  (template)
@@ -179,6 +187,10 @@ bmad-init
 │                tasks/TASK-001/status.md    (→ implementing → done)
 │                docs/current-sprint.md      (moves to Done)
 │
+├── /worktree TASK-002
+│   ├── reads:  tasks/TASK-002/status.md
+│   └── runs:   git worktree add (creates branch + directory)
+│
 └── /sprint
     ├── reads:  docs/current-sprint.md
     │            tasks/*/status.md
@@ -190,11 +202,13 @@ bmad-init
 | Command | Argument | Reads | Writes | Precondition |
 |---------|----------|-------|--------|-------------|
 | `/architect` | — | `docs/prd.md` | `docs/architecture.md`, `docs/components/*.md` | PRD is filled (not template) |
+| `/breakdown` | — | `docs/architecture.md`, `docs/prd.md` | `tasks/TASK-*/{status,research,plan}.md`, `current-sprint.md` | Architecture is filled (not template) |
 | `/new-task` | `TASK-XXX "Title"` | — | `tasks/TASK-XXX/{status,research,plan}.md` | Task does not exist |
 | `/research` | `TASK-XXX` | `status.md`, `prd.md`, `architecture.md`, `src/` | `research.md`, `status.md` | status = `todo` |
 | `/plan` | `TASK-XXX` | `research.md`, `architecture.md` | `plan.md`, `status.md` | status = `research-done` |
 | `/review` | `TASK-XXX` | `plan.md`, `research.md`, `architecture.md`, `prd.md` | nothing | status = `plan-ready` |
 | `/implement` | `TASK-XXX` | `plan.md`, `status.md` | `src/`, `tests/`, `status.md`, `current-sprint.md` | status = `plan-ready` or `implementing` |
+| `/worktree` | `TASK-XXX` | `status.md` | git worktree + branch | Task exists, inside git repo |
 | `/sprint` | — | `current-sprint.md`, `tasks/*/status.md` | nothing | — |
 
 ## File Structure
@@ -207,12 +221,14 @@ my-project/
 │   ├── CLAUDE.md                ← Project instructions for Claude
 │   └── commands/
 │       ├── architect.md         ← /architect command
+│       ├── breakdown.md         ← /breakdown command
 │       ├── implement.md         ← /implement command
 │       ├── new-task.md          ← /new-task command
 │       ├── plan.md              ← /plan command
 │       ├── research.md          ← /research command
 │       ├── review.md            ← /review command
-│       └── sprint.md            ← /sprint command
+│       ├── sprint.md            ← /sprint command
+│       └── worktree.md          ← /worktree command
 ├── docs/
 │   ├── prd.md                   ← Your Product Requirements (fill this first)
 │   ├── architecture.md          ← Generated by /architect
@@ -228,31 +244,41 @@ my-project/
 
 ## Worktree Parallelism
 
-For independent tasks, use git worktrees to implement in parallel:
+For independent tasks, use `/worktree` to set up parallel work in one step:
 
 ```bash
-# Create worktrees for parallel tasks
-git worktree add ../my-project-task002 -b feat/task-002
-git worktree add ../my-project-task003 -b feat/task-003
+# Inside Claude Code:
+/worktree TASK-002
+# → Creates branch feat/task-002-api-endpoints
+# → Creates worktree at ../my-project-TASK-002
+# → Prints: cd ../my-project-TASK-002 && claude
 
-# Work on task 002 in one terminal
-cd ../my-project-task002
-claude
-# /implement TASK-002
+/worktree TASK-003
+# → Same for TASK-003
+```
 
-# Work on task 003 in another terminal
-cd ../my-project-task003
-claude
-# /implement TASK-003
+Then in separate terminals:
 
-# When done, merge back
+```bash
+# Terminal 1
+cd ../my-project-TASK-002 && claude
+/research TASK-002
+
+# Terminal 2
+cd ../my-project-TASK-003 && claude
+/research TASK-003
+```
+
+When done, merge back:
+
+```bash
 cd ../my-project
-git merge feat/task-002
-git merge feat/task-003
+git merge feat/task-002-api-endpoints
+git merge feat/task-003-network-layer
 
 # Clean up worktrees
-git worktree remove ../my-project-task002
-git worktree remove ../my-project-task003
+git worktree remove ../my-project-TASK-002
+git worktree remove ../my-project-TASK-003
 ```
 
 Each worktree gets its own Claude Code session with independent context.
@@ -273,6 +299,9 @@ No. Start with a rough version and iterate. You can re-run `/architect` at any t
 
 **Can I re-run a command?**
 `/architect` can be re-run freely. For task commands, the precondition checks enforce the correct order. If you need to redo research or planning, manually reset the status in `status.md`.
+
+**Can I still create tasks manually?**
+Yes. `/new-task` still works for ad-hoc tasks. `/breakdown` generates all tasks from the architecture in one shot, but you can add more tasks individually at any time.
 
 **What if `/implement` gets interrupted mid-task?**
 Re-run `/implement TASK-XXX` in a new session. The resumption algorithm reads `status.md` to find the last completed phase and picks up from the next one.
