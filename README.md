@@ -88,24 +88,26 @@ Each task follows a strict state machine. Commands transition between states:
                          │ /plan
                          ▼
                   ┌─────────────┐
-                  │  plan-ready  │◀─────────────────┐
-                  └──────┬───────┘                  │
-                         │                    /review (read-only)
-                         │ /implement               │
-                         ▼                          │
-                ┌────────────────┐                  │
-                │  implementing  │──────────────────┘
-                └───────┬────────┘
-                        │
-                  ┌─────┴──────┐
-                  │            │
-             all phases    (manual)
-             completed     edit status
-                  │            │
-                  ▼            ▼
-            ┌──────────┐ ┌──────────┐
-            │   done   │ │ blocked  │
-            └──────────┘ └──────────┘
+            ┌────▶│  plan-ready  │◀─────────────────┐
+            │     └──────┬───────┘                  │
+            │            │                    /review (read-only)
+  /research │            │ /implement               │
+  or /plan  │            ▼                          │
+  (re-entry)│   ┌────────────────┐                  │
+            │   │  implementing  │──────────────────┘
+            │   └───────┬────────┘
+            │           │
+            │     ┌─────┴──────┐
+            │     │            │
+            │all phases    (manual)
+            │completed     edit status
+            │     │            │
+            │     ▼            ▼
+            │┌──────────┐ ┌──────────┐
+            ││   done   │ │ blocked  │
+            │└──────────┘ └──────────┘
+            │
+            └── /review REJECTED path
 ```
 
 ### Session Workflow
@@ -185,7 +187,7 @@ bmad-init
 │   └── writes: src/**  (code changes)
 │                tests/**  (test files)
 │                tasks/TASK-001/status.md    (→ implementing → done)
-│                docs/current-sprint.md      (moves to Done)
+│                docs/current-sprint.md      (Todo → In Progress, then In Progress → Done)
 │
 ├── /worktree TASK-002
 │   ├── reads:  tasks/TASK-002/status.md
@@ -197,17 +199,37 @@ bmad-init
     └── writes: nothing (read-only)
 ```
 
+## The FIC Methodology
+
+**FIC (Focused Intelligence Cycle)** is the core workflow pattern in bmad-init. It structures AI-assisted development into three focused sessions per task:
+
+1. **Research** (`/research`) — Explore the codebase, identify relevant files, patterns, and dependencies. Output: `research.md`. No code written.
+2. **Plan** (`/plan`) — Read the research output, design a phased implementation plan. Output: `plan.md`. Reviewed by a human before proceeding.
+3. **Implement** (`/implement`) — Execute the plan phase by phase, committing after each phase. Output: working code + tests.
+
+**Why three sessions instead of one?**
+
+- **Fresh context**: Each session starts with a clean context window, reading only the files it needs. No accumulated noise from prior work.
+- **Markdown as memory**: Files on disk (`research.md`, `plan.md`, `status.md`) persist between sessions, acting as structured handoff documents.
+- **Human checkpoint**: The plan is reviewed before implementation begins, catching architectural mistakes early instead of after code is written.
+- **Resumability**: If a session is interrupted, `status.md` tracks exactly where work stopped. The next session picks up seamlessly.
+- **Low token usage**: Each session uses 30-60% of the context window instead of exhausting it in a single long session.
+
+The result is higher-quality output with lower token costs and a built-in review gate.
+
 ## Commands Reference
 
 | Command | Argument | Reads | Writes | Precondition |
 |---------|----------|-------|--------|-------------|
+| `/help` | — | `prd.md`, `architecture.md`, `current-sprint.md`, `tasks/*/status.md` | nothing | — |
 | `/architect` | — | `docs/prd.md` | `docs/architecture.md`, `docs/components/*.md` | PRD is filled (not template) |
 | `/breakdown` | — | `docs/architecture.md`, `docs/prd.md` | `tasks/TASK-*/{status,research,plan}.md`, `current-sprint.md` | Architecture is filled (not template) |
-| `/new-task` | `TASK-XXX "Title"` | — | `tasks/TASK-XXX/{status,research,plan}.md` | Task does not exist |
-| `/research` | `TASK-XXX` | `status.md`, `prd.md`, `architecture.md`, `src/` | `research.md`, `status.md` | status = `todo` |
-| `/plan` | `TASK-XXX` | `research.md`, `architecture.md` | `plan.md`, `status.md` | status = `research-done` |
+| `/new-task` | `TASK-XXX "Title" [P0\|P1\|P2]` | — | `tasks/TASK-XXX/{status,research,plan}.md` | Task does not exist |
+| `/research` | `TASK-XXX` | `status.md`, `prd.md`, `architecture.md`, `src/` | `research.md`, `status.md` | status = `todo` or `plan-ready` |
+| `/plan` | `TASK-XXX` | `research.md`, `architecture.md` | `plan.md`, `status.md` | status = `research-done` or `plan-ready` |
 | `/review` | `TASK-XXX` | `plan.md`, `research.md`, `architecture.md`, `prd.md` | nothing | status = `plan-ready` |
 | `/implement` | `TASK-XXX` | `plan.md`, `status.md` | `src/`, `tests/`, `status.md`, `current-sprint.md` | status = `plan-ready` or `implementing` |
+| `/fix` | `"bug description"` | `architecture.md`, `src/` | `src/`, `tests/` | — |
 | `/worktree` | `TASK-XXX` | `status.md` | git worktree + branch | Task exists, inside git repo |
 | `/sprint` | — | `current-sprint.md`, `tasks/*/status.md` | nothing | — |
 
@@ -222,6 +244,8 @@ my-project/
 │   └── commands/
 │       ├── architect.md         ← /architect command
 │       ├── breakdown.md         ← /breakdown command
+│       ├── fix.md               ← /fix command
+│       ├── help.md              ← /help command
 │       ├── implement.md         ← /implement command
 │       ├── new-task.md          ← /new-task command
 │       ├── plan.md              ← /plan command
@@ -302,6 +326,9 @@ No. Start with a rough version and iterate. You can re-run `/architect` at any t
 
 **Can I still create tasks manually?**
 Yes. `/new-task` still works for ad-hoc tasks. `/breakdown` generates all tasks from the architecture in one shot, but you can add more tasks individually at any time.
+
+**When should I use `/fix` vs the full cycle?**
+Use `/fix` for small, well-understood bugs that affect 1-3 files. Use the full FIC cycle (`/new-task` → `/research` → `/plan` → `/implement`) for anything larger, any new feature, or any change that requires architectural understanding. `/fix` will tell you to escalate if the bug is too big.
 
 **What if `/implement` gets interrupted mid-task?**
 Re-run `/implement TASK-XXX` in a new session. The resumption algorithm reads `status.md` to find the last completed phase and picks up from the next one.
