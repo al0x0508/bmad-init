@@ -17,7 +17,7 @@ The approach combines three methodologies:
 
 ```bash
 # Clone the repo
-git clone https://github.com/al/bmad-init.git
+git clone https://github.com/al0x0508/bmad-init.git
 
 # Symlink into PATH
 ln -s "$(pwd)/bmad-init/bmad-init" /usr/local/bin/bmad-init
