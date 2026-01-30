@@ -1,0 +1,908 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bmad-init — Bootstrap BMAD + FIC + CCPM-light workflow for Claude Code CLI
+# Usage: bmad-init [target-directory]
+#   If no target given, uses current directory.
+
+TARGET="${1:-.}"
+TARGET="$(cd "$TARGET" 2>/dev/null && pwd)" || { echo "Error: directory '$1' does not exist."; exit 1; }
+
+echo "Initializing BMAD+FIC scaffold in: $TARGET"
+
+# --- Helper: write file only if it doesn't exist ---
+write_if_missing() {
+  local filepath="$1"
+  local full="$TARGET/$filepath"
+  mkdir -p "$(dirname "$full")"
+  if [[ -f "$full" ]]; then
+    echo "  skip  $filepath (already exists)"
+    return
+  fi
+  cat > "$full"
+  echo "  create $filepath"
+}
+
+# ============================================================
+# .claude/CLAUDE.md
+# ============================================================
+write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
+# Project: [PROJECT NAME]
+
+## Architecture
+- See `docs/architecture.md` for the full architecture
+- See `docs/prd.md` for the Product Requirements Document
+
+## Complete Workflow (follow this order)
+
+1. Fill `docs/prd.md` (you, the human)
+2. `/architect` → produces `docs/architecture.md` + `docs/components/*.md`
+3. `/new-task TASK-001 "Title"` → creates the task
+4. `/research TASK-001` → explore → `tasks/TASK-001/research.md`
+5. `/plan TASK-001` → plan → `tasks/TASK-001/plan.md`
+6. You: review plan.md (10-15 min)
+7. (Optional) `/review TASK-001` → critical review by Claude
+8. `/implement TASK-001` → implement phase by phase
+9. `/sprint` → see next task
+10. Repeat from step 3
+
+### Available Commands
+- `/research TASK-XXX` → FIC Phase 1: explore the codebase, produce research.md
+- `/plan TASK-XXX` → FIC Phase 2: read research.md, produce plan.md
+- `/implement TASK-XXX` → FIC Phase 3: read plan.md, implement phase by phase
+- `/architect` → BMAD mode: analyze the PRD, produce architecture.md
+- `/sprint` → View current sprint and next task
+- `/new-task TASK-XXX "Title"` → Create a new task with templates
+- `/review TASK-XXX` → Critical review of a plan.md (BMAD QA)
+
+### Blocking/Unblocking a task
+To block: manually edit `tasks/TASK-XXX/status.md`, set status = `blocked`
+To unblock: set status back to `implementing` or `plan-ready` as appropriate
+
+### Conventions
+- Conventional Commits: feat:, fix:, refactor:, docs:, test:
+- Tests required for all new code
+- One component = one worktree = one branch
+
+## Project Structure
+```
+docs/
+  prd.md              ← Product Requirements (BMAD)
+  architecture.md     ← Global architecture (BMAD)
+  components/         ← Per-component specs (BMAD)
+  current-sprint.md   ← Current sprint (CCPM-light)
+tasks/
+  TASK-001/
+    research.md       ← FIC Phase 1
+    plan.md           ← FIC Phase 2 (WHAT YOU REVIEW)
+    status.md         ← Task status tracking
+src/                  ← Code
+tests/                ← Tests
+```
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/research.md
+# ============================================================
+write_if_missing ".claude/commands/research.md" <<'ENDOFFILE'
+# /research — FIC Phase 1: Codebase Exploration
+
+## Required argument
+- `$ARGUMENTS`: task identifier (e.g., TASK-001)
+
+## Instructions
+
+You are in **FIC Phase 1 (Focused Intelligence Cycle)**: Exploratory Research.
+
+### Preconditions
+Before starting, verify:
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
+2. Current status = `todo` — if not, say: "Current status: [status]. This command requires status `todo`. Run `/new-task` first to create a new task."
+
+### Step 1: Validate the task
+1. Read `tasks/$ARGUMENTS/status.md` to verify the task exists
+2. Read `docs/prd.md` and `docs/architecture.md` for global context
+
+### Step 2: Explore the codebase
+Use the Task tool (Explore subagent) to:
+- Identify files relevant to this task
+- Understand existing patterns in the code
+- Spot dependencies and interfaces involved
+- Find similar or reusable code
+
+### Step 3: Produce research.md
+Write `tasks/$ARGUMENTS/research.md` with this exact format:
+
+```markdown
+# Research: $ARGUMENTS — [Task title]
+
+## Context
+[Summary of what this task must accomplish, based on PRD/sprint]
+
+## Relevant files identified
+- `path/to/file.ext` — [role in the task]
+- ...
+
+## Existing patterns to follow
+- [Pattern 1 found in the codebase]
+- ...
+
+## Reusable code
+- `path/to/existing.ext:function_name` — [what can be reused]
+- ...
+
+## Dependencies and interfaces
+- [Component/module this task depends on]
+- ...
+
+## Points of attention
+- [Identified risk or complexity]
+- ...
+
+## Open questions
+- [Question requiring a human decision]
+- ...
+```
+
+### Step 4: Update status
+Update `tasks/$ARGUMENTS/status.md`:
+- In `## Current`: set Status to `research-done`, update Date
+- In `## History`: add `- [date] : Research completed`
+
+### Rules
+- **DO NOT** write code
+- **DO NOT** propose solutions — just collect facts
+- Be **concise**: max 200 lines for research.md
+- Use **exact paths** (no vague descriptions)
+- Keep the session **short** (< 50% context)
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/plan.md
+# ============================================================
+write_if_missing ".claude/commands/plan.md" <<'ENDOFFILE'
+# /plan — FIC Phase 2: Implementation Planning
+
+## Required argument
+- `$ARGUMENTS`: task identifier (e.g., TASK-001)
+
+## Instructions
+
+You are in **FIC Phase 2 (Focused Intelligence Cycle)**: Planning.
+
+### Preconditions
+Before starting, verify:
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
+2. Current status = `research-done` — if not, say: "Current status: [status]. This command requires status `research-done`. Run `/research $ARGUMENTS` first."
+
+### Step 1: Load context
+1. Read `tasks/$ARGUMENTS/status.md` — verify status is `research-done`
+2. Read `tasks/$ARGUMENTS/research.md` — this is your primary source
+3. Read `docs/architecture.md` — to respect global architecture
+4. If needed, read key files identified in research.md (max 3-4 files)
+
+### Step 2: Design the plan
+Think about:
+- Optimal implementation order (dependencies first)
+- Breakdown into atomic phases (each phase = 1 commit)
+- Tests to write for each phase
+- Risks and how to mitigate them
+
+### Step 3: Produce plan.md
+Write `tasks/$ARGUMENTS/plan.md` with this exact format:
+
+```markdown
+# Plan: $ARGUMENTS — [Task title]
+
+## Context
+[Summary in 3-5 lines from research.md — essentials only]
+
+## Planned changes
+
+### Phase 1: [Descriptive name]
+**Objective**: [What this phase accomplishes]
+
+Files to modify:
+- `path/to/file.ext`: [Precise description of the change]
+- `path/to/file2.ext`: [Precise description]
+
+Tests:
+- `tests/path/test_file.ext`: [What is tested]
+
+Commit message: `feat: [message]`
+
+### Phase 2: [Descriptive name]
+**Objective**: [What this phase accomplishes]
+
+Files to modify:
+- ...
+
+Tests:
+- ...
+
+Commit message: `feat: [message]`
+
+[... as many phases as needed ...]
+
+## Implementation order
+1. Phase 1 — [justification if non-obvious]
+2. Phase 2 — [depends on Phase 1 because...]
+
+## Identified risks
+| Risk | Impact | Mitigation |
+|------|--------|------------|
+| [Risk] | [High/Medium/Low] | [Action] |
+
+## Estimate
+- Phases: [N]
+- Files affected: [N]
+- New files: [N]
+- Tests to write: [N]
+```
+
+### Step 4: Update status
+Update `tasks/$ARGUMENTS/status.md`:
+- In `## Current`: set Status to `plan-ready`, update Date
+- In `## History`: add `- [date] : Plan completed`
+
+### Rules
+- **DO NOT** write code — only the plan
+- Be **specific**: exact paths, precise change descriptions
+- Each phase must be **atomic**: compilable and testable independently
+- Commit messages must follow **Conventional Commits**
+- The plan must be **readable by a human in 10-15 min**
+- Max **300 lines** for plan.md
+
+### Important
+This plan.md will be **reviewed by the human** before implementation.
+It must be clear enough for a developer to understand exactly
+what will be done, why, and in what order.
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/implement.md
+# ============================================================
+write_if_missing ".claude/commands/implement.md" <<'ENDOFFILE'
+# /implement — FIC Phase 3: Implementation
+
+## Required argument
+- `$ARGUMENTS`: task identifier (e.g., TASK-001)
+
+## Instructions
+
+You are in **FIC Phase 3 (Focused Intelligence Cycle)**: Implementation.
+
+### Preconditions
+Before starting, verify:
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
+2. Current status = `plan-ready` or `implementing` — if not, say: "Current status: [status]. This command requires status `plan-ready` or `implementing`. Run `/plan $ARGUMENTS` first."
+
+### Step 1: Load the plan
+1. Read `tasks/$ARGUMENTS/status.md` — verify status is `plan-ready` or `implementing`
+2. Read `tasks/$ARGUMENTS/plan.md` — this is your execution plan
+3. If status is `implementing`, use the resumption algorithm below
+
+### Resumption algorithm (if status = implementing)
+1. Read the `## Phases` section of status.md
+2. Find the last line with `[x]` — that is the last completed phase
+3. The next phase (first line with `[ ]`) is the one to resume
+4. If a phase is marked `in progress`, resume it from the beginning
+
+### Step 2: Implement phase by phase
+
+For **each phase** in plan.md:
+
+1. **Update status.md `## Current` section**:
+   - Status: `implementing`
+   - Current phase: [N/Total]
+   - Last completed: [previous phase name or —]
+   - Date: [today]
+2. **Update status.md `## Phases` section** (first time only — fill checkboxes):
+   ```
+   - [ ] Phase 1: [name]
+   - [ ] Phase 2: [name]
+   ...
+   ```
+3. **Read the files** listed in the phase (if not already read)
+4. **Implement** the changes described in the plan
+   - Follow the plan EXACTLY — no improvisation
+   - If the plan is insufficient or incorrect, **STOP** and tell the user
+5. **Write the tests** listed in the phase
+6. **Run the tests** to verify everything passes
+7. **Commit** with the message from the plan
+   ```bash
+   git add -A && git commit -m "message from plan"
+   ```
+8. **Mark phase complete in status.md**:
+   - In `## Phases`: change `[ ]` to `[x]` for this phase, add commit hash
+   - In `## History`: add `- [date] : Phase N completed`
+
+### Step 3: Finalize
+When all phases are completed:
+1. Run the full test suite
+2. Update `tasks/$ARGUMENTS/status.md`:
+   - In `## Current`: set Status to `done`
+   - In `## History`: add `- [date] : Implementation completed`
+3. Update the sprint board: in `docs/current-sprint.md`, move the task entry
+   from `### In Progress` to `### Done`
+   - Format: `- TASK-XXX — [Title] (Priority: PX)`
+
+### Strict rules
+
+- **FOLLOW THE PLAN**: do not add, modify, or ignore what is in plan.md
+- **ONE COMMIT PER PHASE**: no mega-commits
+- **TESTS REQUIRED**: each phase must have passing tests
+- **STOP IF PROBLEM**: if the plan does not work, stop and explain why
+  - Do not "adapt" silently — the plan was reviewed by the human
+  - Propose a plan amendment, not an ad-hoc solution
+- **NO SCOPE CREEP**: add nothing that is not in the plan
+- **Conventional Commits**: use commit messages from the plan
+
+### In case of blockers
+If something does not work as expected:
+1. Describe the problem precisely
+2. Show what the plan expected vs what is happening
+3. Propose a minimal plan amendment
+4. Wait for human validation before continuing
+
+### Status.md format during implementation
+```markdown
+# Status: $ARGUMENTS
+
+## Info
+- Title: [title]
+- Created: [date]
+- Priority: P1
+
+## Current
+- Status: implementing
+- Current phase: 2/4
+- Last completed: Phase 1 — [name]
+- Date: YYYY-MM-DD
+
+## Phases
+- [x] Phase 1: [name] — commit: abc1234
+- [ ] Phase 2: [name] — in progress
+- [ ] Phase 3: [name]
+- [ ] Phase 4: [name]
+
+## History
+- [date] : Created
+- [date] : Research completed
+- [date] : Plan completed
+- [date] : Phase 1 completed
+```
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/architect.md
+# ============================================================
+write_if_missing ".claude/commands/architect.md" <<'ENDOFFILE'
+# /architect — BMAD Mode: Architecture Generation
+
+## Instructions
+
+You are in **Architect mode (BMAD — Build Measure Analyze Design)**.
+
+Your role: analyze the PRD and produce a complete architecture document.
+
+### Preconditions
+Before starting, verify:
+1. `docs/prd.md` exists and is not the empty template — if it still contains placeholder text like `[PROJECT NAME]` or `[1-2 sentences describing the project vision]`, say: "The PRD is still a template. Fill `docs/prd.md` with your project requirements first."
+
+### Step 1: Read the PRD
+1. Read `docs/prd.md` in full
+2. Identify the major required components
+3. Identify technical constraints
+
+### Step 2: Explore existing code (if applicable)
+If code already exists in `src/`:
+- Explore the current structure
+- Identify patterns in place
+- Verify compatibility with the PRD
+
+### Step 3: Produce architecture.md
+Write `docs/architecture.md` with this format:
+
+```markdown
+# Architecture: [Project Name]
+
+## Overview
+
+[ASCII diagram of the global architecture — use Unicode box-drawing characters]
+
+## Components
+
+### [Component 1]
+- **Responsibility**: [single sentence]
+- **Public interface**: [exposed functions/API]
+- **Dependencies**: [other components it depends on]
+- **Technology**: [language, framework, lib]
+
+### [Component 2]
+...
+
+## Data flows
+
+[ASCII sequence diagram showing main interactions]
+
+## Technical decisions
+
+| Decision | Choice | Alternatives considered | Justification |
+|----------|--------|------------------------|---------------|
+| ... | ... | ... | ... |
+
+## Code structure
+
+[Planned directory tree]
+
+## Interfaces between components
+
+### [Interface 1: Component A → Component B]
+- **Protocol**: [HTTP/gRPC/direct function/channel/etc.]
+- **Format**: [JSON/Protobuf/struct/etc.]
+- **Contract**: [contract description]
+
+## Test strategy
+
+| Level | Target | Tool |
+|-------|--------|------|
+| Unit | [what] | [tool] |
+| Integration | [what] | [tool] |
+| E2E | [what] | [tool] |
+
+## Architectural non-goals
+- [What the architecture intentionally does NOT cover]
+```
+
+### Step 4: Create component specs
+For each identified component, create `docs/components/[component].md`:
+
+```markdown
+# Component: [Name]
+
+## Responsibility
+[Detailed description]
+
+## Public interface
+[Function signatures / endpoints / API]
+
+## Data model
+[Structs / types / schemas]
+
+## Behavior
+[Description of behavior, edge cases]
+
+## Dependencies
+- [Component X]: [why]
+
+## Required tests
+- [Test 1]: [what it verifies]
+```
+
+### Rules
+- **ASCII diagrams required**: use Unicode box-drawing characters
+- **Justify every choice**: no "it's standard" — explain why
+- **Clear interfaces**: each component must have an explicit contract
+- **Pragmatic**: no over-engineering — only what the PRD needs
+- Ask the user for validation before finalizing
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/sprint.md
+# ============================================================
+write_if_missing ".claude/commands/sprint.md" <<'ENDOFFILE'
+# /sprint — CCPM-light Sprint View
+
+## Instructions
+
+You display the current sprint status and suggest the next action.
+
+### Step 1: Read sprint state
+1. Read `docs/current-sprint.md`
+2. Scan `tasks/*/status.md` for the actual status of each task
+
+### Status mapping
+
+| Internal status | Display | Meaning |
+|----------------|---------|---------|
+| todo           | Todo    | Not started yet |
+| research-done  | Research | Research done, waiting for /plan |
+| plan-ready     | Planned | Plan ready, waiting for human review |
+| implementing   | WIP     | Implementation in progress (Phase X/Y) |
+| done           | Done    | Completed |
+| blocked        | Blocked | Blocked (reason in status.md) |
+
+### Step 2: Display the dashboard
+
+Show a formatted summary:
+
+```
+Sprint: [Name/Number]
+Objective: [Sprint objective]
+
+┌──────────┬────────────────────────────┬─────────────┐
+│  Status  │  Task                      │  Info       │
+├──────────┼────────────────────────────┼─────────────┤
+│  Done    │  TASK-001 — Setup project  │  —          │
+│  WIP     │  TASK-002 — Core renderer  │  Phase 2/4  │
+│  Todo    │  TASK-003 — Network layer  │  —          │
+│  Todo    │  TASK-004 — UI components  │  —          │
+│  Blocked │  TASK-005 — Integration    │  See status │
+└──────────┴────────────────────────────┴─────────────┘
+
+Progress: 1/5 (20%)
+```
+
+### Entry format in current-sprint.md
+Each task entry follows this format:
+```
+- TASK-XXX — [Title] (Priority: PX)
+```
+
+### Step 3: Recommend the next action
+
+Based on the state:
+- If a task is `implementing` → suggest `/implement TASK-XXX` to continue
+- If a task is `plan-ready` and not yet reviewed → remind to review plan.md
+- If a task is `research-done` → suggest `/plan TASK-XXX`
+- If no task is in progress → suggest the next `todo` task with `/research TASK-XXX`
+- If everything is `done` → congratulate and suggest creating the next sprint
+
+Recommendation format:
+```
+Recommended next action:
+→ /[command] [TASK-XXX]
+  Reason: [why this task now]
+```
+
+### Step 4: Alert on blockers
+If tasks are blocked (`blocked`), mention them clearly
+and propose actions to unblock.
+
+### Rules
+- **Read-only**: this command does not modify any files
+- Be **concise**: dashboard + recommendation, that is all
+- Statuses come from `status.md` files, not estimates
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/new-task.md
+# ============================================================
+write_if_missing ".claude/commands/new-task.md" <<'ENDOFFILE'
+# /new-task — Create a New Task
+
+## Required argument
+- `$ARGUMENTS`: format `TASK-XXX "Task title"` (e.g., `TASK-003 "Implement network layer"`)
+
+## Instructions
+
+You create a new task with its directory structure and templates.
+
+### Step 1: Parse arguments
+Extract:
+- `task_id`: the first word (e.g., TASK-003)
+- `title`: the text in quotes (e.g., Implement network layer)
+
+If arguments are invalid, explain the expected format:
+```
+Usage: /new-task TASK-XXX "Task title"
+Example: /new-task TASK-003 "Implement network layer"
+```
+
+### Step 2: Verify the task does not exist
+- Check that `tasks/[task_id]/` does not already exist
+- If it exists, warn the user and stop
+
+### Step 3: Create the structure
+Create the directory `tasks/[task_id]/` with these files:
+
+#### tasks/[task_id]/status.md
+```markdown
+# Status: [task_id]
+
+## Info
+- Title: [title]
+- Created: [today's date]
+- Priority: P1
+
+## Current
+- Status: todo
+- Current phase: —
+- Last completed: —
+- Date: [today's date]
+
+## Phases
+[To be filled by /implement]
+
+## History
+- [today's date] : Created
+```
+
+#### tasks/[task_id]/research.md
+```markdown
+# Research: [task_id] — [title]
+
+> This file will be filled by `/research [task_id]`
+
+## Context
+[To be completed]
+
+## Relevant files identified
+[To be completed]
+
+## Existing patterns to follow
+[To be completed]
+
+## Reusable code
+[To be completed]
+
+## Dependencies and interfaces
+[To be completed]
+
+## Points of attention
+[To be completed]
+
+## Open questions
+[To be completed]
+```
+
+#### tasks/[task_id]/plan.md
+```markdown
+# Plan: [task_id] — [title]
+
+> This file will be filled by `/plan [task_id]`
+> It will then be reviewed by the human before implementation.
+
+## Context
+[To be completed]
+
+## Planned changes
+[To be completed]
+
+## Identified risks
+[To be completed]
+
+## Estimate
+[To be completed]
+```
+
+### Step 4: Update the sprint board
+Add to `docs/current-sprint.md` under `### Todo`:
+```
+- TASK-XXX — [Title] (Priority: P1)
+```
+
+### Step 5: Confirm
+Display:
+```
+Task created: [task_id] — [title]
+Directory:    tasks/[task_id]/
+Files:        status.md, research.md, plan.md
+
+Next step: /research [task_id]
+```
+
+### Rules
+- **Verify before creating** — no duplicates
+- Task ID format: `TASK-XXX` (3 digits minimum)
+- Templates are placeholders — they will be filled by /research and /plan
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/review.md
+# ============================================================
+write_if_missing ".claude/commands/review.md" <<'ENDOFFILE'
+# /review — Critical Plan Review (BMAD QA)
+
+## Required argument
+- `$ARGUMENTS`: task identifier (e.g., TASK-001)
+
+## Instructions
+
+You are the **QA Reviewer** of the BMAD process. Your role is to challenge
+the plan.md with a critical eye before implementation begins.
+
+### Preconditions
+Before starting, verify:
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
+2. Current status = `plan-ready` — if not, say: "Current status: [status]. This command requires status `plan-ready`. Run `/plan $ARGUMENTS` first."
+
+### Step 1: Load context
+1. Read `tasks/$ARGUMENTS/plan.md` — this is your main subject
+2. Read `tasks/$ARGUMENTS/research.md` — to verify consistency
+3. Read `docs/architecture.md` — to verify architectural compliance
+4. Read `docs/prd.md` — to verify alignment with requirements
+
+### Step 2: Systematic review
+
+Evaluate the plan on these axes:
+
+#### Completeness
+- [ ] All files to modify are listed?
+- [ ] Tests cover critical cases?
+- [ ] Edge cases are addressed?
+- [ ] Nothing is missed compared to research.md?
+
+#### Architectural consistency
+- [ ] Changes respect the documented architecture?
+- [ ] Interfaces between components are preserved?
+- [ ] No violation of existing patterns?
+
+#### Breakdown quality
+- [ ] Each phase is atomic (compilable/testable alone)?
+- [ ] Phase order respects dependencies?
+- [ ] Commit messages are descriptive and follow Conventional Commits?
+
+#### Risks
+- [ ] Identified risks are realistic?
+- [ ] Mitigations are concrete?
+- [ ] Are there unidentified risks?
+
+#### Simplicity
+- [ ] No over-engineering?
+- [ ] No out-of-scope changes?
+- [ ] Simplest solution that works?
+
+### Step 3: Produce the verdict
+
+Display a structured report:
+
+```markdown
+## Review: [TASK-XXX] — [Title]
+
+### Verdict: APPROVED / NEEDS CHANGES / REJECTED
+
+### Positive points
+- [What is good in the plan]
+
+### Issues found
+1. **[Severity: CRITICAL/MAJOR/MINOR]**: [Description]
+   - Location: Phase X, file Y
+   - Suggestion: [How to fix]
+
+2. ...
+
+### Questions for the human
+- [Question requiring a decision]
+
+### Recommendation
+[Summary of what needs to happen before running /implement]
+```
+
+### Actions based on verdict
+- **APPROVED** → The human can run `/implement TASK-XXX`
+- **NEEDS CHANGES** → The human edits plan.md manually, then re-runs `/review TASK-XXX`
+- **REJECTED** → Two options:
+  1. Re-run `/plan TASK-XXX` (re-plan from existing research.md)
+  2. Re-run `/research TASK-XXX` (if the research was insufficient)
+  Note: the status stays `plan-ready` — the human decides the action.
+
+### Rules
+- **Be honest**: a bad plan costs more than a delay
+- **Be constructive**: always propose an alternative
+- **No nitpicking**: focus on issues that impact implementation
+- **DO NOT modify** files — this is a read-only review
+- CRITICAL issues block implementation
+- MAJOR issues should be addressed but do not necessarily block
+- MINOR issues are improvement suggestions
+ENDOFFILE
+
+# ============================================================
+# docs/prd.md
+# ============================================================
+write_if_missing "docs/prd.md" <<'ENDOFFILE'
+# PRD: [Project Name]
+
+## Vision
+[1-2 sentences describing the project vision]
+
+## Problem
+[What this project solves]
+
+## Target users
+[Who will use this project and in what context]
+
+## Core features
+1. [Feature 1] — priority: P0
+2. [Feature 2] — priority: P1
+3. [Feature 3] — priority: P2
+
+## Technical constraints
+- Language: [e.g., Rust, Python, TypeScript]
+- Framework: [e.g., Actix, FastAPI, Next.js]
+- Infrastructure: [e.g., Kubernetes, Docker, bare metal]
+- Other: [specific constraints]
+
+## Non-goals (explicitly out of scope)
+- [What we are NOT doing in this project]
+
+## Success criteria
+- [Measurable criterion 1]
+- [Measurable criterion 2]
+ENDOFFILE
+
+# ============================================================
+# docs/architecture.md
+# ============================================================
+write_if_missing "docs/architecture.md" <<'ENDOFFILE'
+# Architecture: [Project Name]
+
+> This file will be produced by `/architect` after the PRD is filled in.
+> Run: `/architect` to generate the complete architecture.
+
+## Overview
+[ASCII diagram to be generated]
+
+## Components
+[To be completed by /architect]
+
+## Technical decisions
+[To be completed by /architect]
+
+## Interfaces between components
+[To be completed by /architect]
+
+## Test strategy
+[To be completed by /architect]
+ENDOFFILE
+
+# ============================================================
+# docs/current-sprint.md
+# ============================================================
+write_if_missing "docs/current-sprint.md" <<'ENDOFFILE'
+# Sprint: [Number] — [Sprint Name]
+
+## Objective
+[Main sprint objective in 1-2 sentences]
+
+## Dates
+- Start: YYYY-MM-DD
+- Target end: YYYY-MM-DD
+
+## Tasks
+
+### Done
+<!-- Move completed tasks here -->
+
+### In Progress
+<!-- Tasks currently being implemented -->
+
+### Todo
+<!-- Tasks ready to be picked up -->
+
+### Backlog
+<!-- Identified tasks not yet prioritized -->
+
+## CCPM Buffer
+- Estimated consumption: 0%
+- At-risk tasks: none
+
+## Notes
+[Sprint notes, decisions made, blockers resolved]
+ENDOFFILE
+
+# ============================================================
+# Placeholder directories
+# ============================================================
+mkdir -p "$TARGET/docs/components"
+mkdir -p "$TARGET/tasks"
+mkdir -p "$TARGET/src"
+
+# .gitkeep for empty dirs
+for dir in docs/components tasks src; do
+  if [[ -z "$(ls -A "$TARGET/$dir" 2>/dev/null)" ]]; then
+    touch "$TARGET/$dir/.gitkeep"
+    echo "  create $dir/.gitkeep"
+  fi
+done
+
+echo ""
+echo "Done! Scaffold ready."
+echo ""
+echo "Next steps:"
+echo "  1. Edit docs/prd.md with your project requirements"
+echo "  2. cd $TARGET && claude"
+echo "  3. /architect           → generate architecture"
+echo "  4. /new-task TASK-001 \"First feature\""
+echo "  5. /sprint              → see what to do next"
