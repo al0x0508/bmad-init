@@ -42,7 +42,7 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 5. `/research TASK-001` → explore → `tasks/TASK-001/research.md`
 6. `/plan TASK-001` → plan → `tasks/TASK-001/plan.md`
 7. You: review plan.md (10-15 min)
-8. (Optional) `/review TASK-001` → critical review by Claude
+8. (Optional) `/plan --review TASK-001` → plan + critical review by Claude
 9. `/implement TASK-001` → implement phase by phase
 10. `/sprint` → see next task
 11. Repeat from step 5
@@ -53,16 +53,14 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 - `/merge-task TASK-XXX` → merge completed task branch to main
 
 ### Available Commands
-- `/help` → Show project state and recommended next action
+- `/sprint` → View project status and recommended next action
 - `/architect` → BMAD mode: analyze the PRD, produce architecture.md
-- `/breakdown` → Generate tasks from architecture (replaces manual /new-task)
+- `/breakdown` → Generate tasks from architecture (or single task with `/breakdown TASK-XXX "Title"`)
 - `/research TASK-XXX` → FIC Phase 1: explore the codebase, produce research.md
 - `/plan TASK-XXX` → FIC Phase 2: read research.md, produce plan.md
+- `/plan --review TASK-XXX` → Plan + critical QA review (optional)
 - `/implement TASK-XXX` → FIC Phase 3: read plan.md, implement phase by phase
-- `/review TASK-XXX` → Critical review of a plan.md (BMAD QA)
 - `/fix "description"` → Quick bug fix (bypasses full FIC cycle)
-- `/sprint` → View current sprint and next task
-- `/new-task TASK-XXX "Title"` → Create a single task manually
 - `/worktree TASK-XXX` → Create git worktree for parallel work
 - `/swarm TASK-A,TASK-B,...` → Parallel agent team orchestration
 - `/merge-task TASK-XXX` → Merge completed task branch to main
@@ -88,7 +86,7 @@ tasks/
     research.md       ← FIC Phase 1
     plan.md           ← FIC Phase 2 (WHAT YOU REVIEW)
     status.md         ← Task status tracking
-  TASK-002/           ← Created by /breakdown or /new-task
+  TASK-002/           ← Created by /breakdown
     ...
 src/                  ← Code
 tests/                ← Tests
@@ -110,7 +108,7 @@ You are in **FIC Phase 1 (Focused Intelligence Cycle)**: Exploratory Research.
 
 ### Preconditions
 Before starting, verify:
-1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/breakdown $ARGUMENTS "Title"` first."
 2. Current status = `todo` or `plan-ready` — if not, say: "Current status: [status]. This command requires status `todo` or `plan-ready`. Reset the status in `tasks/$ARGUMENTS/status.md` if you need to re-run research."
 
 ### Step 1: Validate the task
@@ -186,25 +184,33 @@ write_if_missing ".claude/commands/plan.md" <<'ENDOFFILE'
 # /plan — FIC Phase 2: Implementation Planning
 
 ## Required argument
-- `$ARGUMENTS`: task identifier (e.g., TASK-001)
+- `$ARGUMENTS`: task identifier, optionally preceded by `--review`
+  - `/plan TASK-001` → plan only
+  - `/plan --review TASK-001` → plan + integrated QA review
 
 ## Instructions
 
 You are in **FIC Phase 2 (Focused Intelligence Cycle)**: Planning.
 
+### Step 0: Detect mode
+
+Parse `$ARGUMENTS`:
+- If it starts with `--review` → enable review mode, extract task ID from the rest
+- Otherwise → normal mode, task ID is the full `$ARGUMENTS`
+
 ### Preconditions
 Before starting, verify:
-1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
-2. Current status = `research-done` or `plan-ready` — if not, say: "Current status: [status]. This command requires status `research-done` or `plan-ready`. Run `/research $ARGUMENTS` first, or reset the status in `tasks/$ARGUMENTS/status.md`."
+1. `tasks/[task_id]/status.md` exists — if not, say: "Task not found. Run `/breakdown TASK-XXX "Title"` first."
+2. Current status = `research-done` or `plan-ready` — if not, say: "Current status: [status]. This command requires status `research-done` or `plan-ready`. Run `/research [task_id]` first, or reset the status in `tasks/[task_id]/status.md`."
 
 ### Step 1: Load context
-1. Read `tasks/$ARGUMENTS/status.md` — verify status is `research-done` or `plan-ready`
-2. Read `tasks/$ARGUMENTS/research.md` — this is your primary source
+1. Read `tasks/[task_id]/status.md` — verify status is `research-done` or `plan-ready`
+2. Read `tasks/[task_id]/research.md` — this is your primary source
 3. Read `docs/architecture.md` — to respect global architecture
 4. If needed, read key files identified in research.md (max 3-4 files)
 
 ### Step 1b: Check open questions
-If `tasks/$ARGUMENTS/research.md` has a non-empty `## Open questions` section (anything other than `[To be completed]` or empty):
+If `tasks/[task_id]/research.md` has a non-empty `## Open questions` section (anything other than `[To be completed]` or empty):
 1. List the open questions
 2. Ask the user: "These open questions are unresolved. Proceed with assumptions, or wait for resolution?"
 3. If proceeding, document the assumptions in the `Identified risks` section of the plan
@@ -217,10 +223,10 @@ Think about:
 - Risks and how to mitigate them
 
 ### Step 3: Produce plan.md
-Write `tasks/$ARGUMENTS/plan.md` with this exact format:
+Write `tasks/[task_id]/plan.md` with this exact format:
 
 ```markdown
-# Plan: $ARGUMENTS — [Task title]
+# Plan: [task_id] — [Task title]
 
 ## Context
 [Summary in 3-5 lines from research.md — essentials only]
@@ -269,9 +275,92 @@ Commit message: `feat: [message]`
 ```
 
 ### Step 4: Update status
-Update `tasks/$ARGUMENTS/status.md`:
+Update `tasks/[task_id]/status.md`:
 - In `## Current`: set Status to `plan-ready`, update Date
 - In `## History`: add `- [date] : Plan completed`
+
+---
+
+### Step 5: Integrated review (only if `--review` flag was set)
+
+If review mode is enabled, perform a critical QA review of the plan you just produced.
+
+#### Load additional context for review
+1. Read `docs/prd.md` — to verify alignment with requirements
+
+#### Systematic review
+
+Evaluate the plan on these axes:
+
+##### Completeness
+- [ ] All files to modify are listed?
+- [ ] Tests cover critical cases?
+- [ ] Edge cases are addressed?
+- [ ] Nothing is missed compared to research.md?
+
+##### Architectural consistency
+- [ ] Changes respect the documented architecture?
+- [ ] Interfaces between components are preserved?
+- [ ] No violation of existing patterns?
+
+##### Breakdown quality
+- [ ] Each phase is atomic (compilable/testable alone)?
+- [ ] Phase order respects dependencies?
+- [ ] Commit messages are descriptive and follow Conventional Commits?
+
+##### Risks
+- [ ] Identified risks are realistic?
+- [ ] Mitigations are concrete?
+- [ ] Are there unidentified risks?
+
+##### Simplicity
+- [ ] No over-engineering?
+- [ ] No out-of-scope changes?
+- [ ] Simplest solution that works?
+
+#### Produce the verdict
+
+Display a structured report:
+
+```markdown
+## Review: [TASK-XXX] — [Title]
+
+### Verdict: APPROVED / NEEDS CHANGES / REJECTED
+
+### Positive points
+- [What is good in the plan]
+
+### Issues found
+1. **[Severity: CRITICAL/MAJOR/MINOR]**: [Description]
+   - Location: Phase X, file Y
+   - Suggestion: [How to fix]
+
+2. ...
+
+### Questions for the human
+- [Question requiring a decision]
+
+### Recommendation
+[Summary of what needs to happen before running /implement]
+```
+
+#### Actions based on verdict
+- **APPROVED** → The human can run `/implement [task_id]`
+- **NEEDS CHANGES** → The human edits plan.md manually, then re-runs `/plan --review [task_id]`
+- **REJECTED** → Two options (both accept `plan-ready` as entry state):
+  1. Re-run `/plan [task_id]` — re-plan from existing research.md
+  2. Re-run `/research [task_id]` — redo research if it was insufficient
+  The status stays `plan-ready`. No manual reset needed — both commands accept this state.
+
+#### Review rules
+- **Be honest**: a bad plan costs more than a delay
+- **Be constructive**: always propose an alternative
+- **No nitpicking**: focus on issues that impact implementation
+- CRITICAL issues block implementation
+- MAJOR issues should be addressed but do not necessarily block
+- MINOR issues are improvement suggestions
+
+---
 
 ### Rules
 - **DO NOT** write code — only the plan
@@ -287,7 +376,7 @@ It must be clear enough for a developer to understand exactly
 what will be done, why, and in what order.
 
 ### Session info
-- Context budget: < 30%
+- Context budget: < 30% (normal mode), < 50% (review mode)
 - Recommended model: Opus (deep reasoning)
 ENDOFFILE
 
@@ -306,7 +395,7 @@ You are in **FIC Phase 3 (Focused Intelligence Cycle)**: Implementation.
 
 ### Preconditions
 Before starting, verify:
-1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/breakdown $ARGUMENTS "Title"` first."
 2. Current status = `plan-ready` or `implementing` — if not, say: "Current status: [status]. This command requires status `plan-ready` or `implementing`. Run `/plan $ARGUMENTS` first, or reset the status in `tasks/$ARGUMENTS/status.md`."
 
 ### Step 1: Load the plan
@@ -541,17 +630,69 @@ ENDOFFILE
 # .claude/commands/sprint.md
 # ============================================================
 write_if_missing ".claude/commands/sprint.md" <<'ENDOFFILE'
-# /sprint — CCPM-light Sprint View
+# /sprint — Project Status & Sprint Dashboard
 
 ## Instructions
 
-You display the current sprint status and suggest the next action.
+You analyze the current project state and display the sprint dashboard with a recommended next action.
 
-### Step 1: Read sprint state
-1. Read `docs/current-sprint.md`
-2. Scan `tasks/*/status.md` for the actual status of each task
+This command serves as the single entry point for "where am I?" — it detects whether the project is in bootstrap phase or active sprint, and adapts its output accordingly.
 
-### Status mapping
+### Step 1: Detect project phase
+
+Read the following files (skip any that don't exist):
+1. `docs/prd.md` — is it filled or still a template?
+2. `docs/architecture.md` — is it filled or still a template?
+3. `docs/current-sprint.md` — are there tasks listed?
+4. `tasks/*/status.md` — scan all task statuses
+
+### Step 2: Determine mode
+
+- **Bootstrap mode**: No tasks exist yet (project is being set up)
+- **Sprint mode**: Tasks exist (normal sprint tracking)
+
+---
+
+### Step 3a: Bootstrap mode (no tasks)
+
+If no tasks exist, display project setup status and guide toward first steps:
+
+```
+Project state:
+  PRD:          [filled / template / missing]
+  Architecture: [filled / template / missing]
+  Tasks:        none
+
+Recommended next action:
+→ [command or instruction]
+  Reason: [why this is the next step]
+
+Quick reference:
+  /architect               Generate architecture from PRD
+  /breakdown               Generate all tasks from architecture
+  /breakdown TASK-XXX "T"  Create a single task manually
+  /research TASK-XXX       Explore codebase for a task
+  /plan TASK-XXX           Create implementation plan
+  /plan --review TASK-XXX  Plan + critical review (optional)
+  /implement TASK-XXX      Implement a planned task
+  /fix "description"       Quick bug fix (bypasses full FIC cycle)
+  /worktree TASK-XXX       Create git worktree for parallel work
+  /swarm TASK-A,B,C        Parallel agent team orchestration
+  /merge-task TASK-XXX     Merge completed task branch to main
+```
+
+Bootstrap recommendations:
+- **No PRD** (or still template) → "Fill `docs/prd.md` with your project requirements, then run `/architect`."
+- **PRD filled, no architecture** (or still template) → "Run `/architect` to generate the architecture."
+- **Architecture filled, no tasks** → "Run `/breakdown` to generate tasks from the architecture."
+
+---
+
+### Step 3b: Sprint mode (tasks exist)
+
+Display the full sprint dashboard:
+
+#### Status mapping
 
 | Internal status | Display | Meaning |
 |----------------|---------|---------|
@@ -562,9 +703,7 @@ You display the current sprint status and suggest the next action.
 | done           | Done    | Completed |
 | blocked        | Blocked | Blocked (reason in status.md) |
 
-### Step 2: Display the dashboard
-
-Show a formatted summary:
+#### Dashboard format
 
 ```
 Sprint: [Name/Number]
@@ -583,13 +722,13 @@ Objective: [Sprint objective]
 Progress: 1/5 (20%)
 ```
 
-### Entry format in current-sprint.md
+#### Entry format in current-sprint.md
 Each task entry follows this format:
 ```
 - TASK-XXX — [Title] (Priority: PX)
 ```
 
-### Step 3: Recommend the next action
+### Step 4: Recommend the next action
 
 Based on the state:
 - If a task is `implementing` → suggest `/implement TASK-XXX` to continue
@@ -597,6 +736,7 @@ Based on the state:
 - If a task is `research-done` → suggest `/plan TASK-XXX`
 - If no task is in progress → suggest the next `todo` task with `/research TASK-XXX`
 - If everything is `done` → congratulate and suggest creating the next sprint
+- If a task is `blocked` → mention it clearly and propose actions to unblock
 
 Recommendation format:
 ```
@@ -605,13 +745,9 @@ Recommended next action:
   Reason: [why this task now]
 ```
 
-### Step 4: Alert on blockers
-If tasks are blocked (`blocked`), mention them clearly
-and propose actions to unblock.
-
 ### Rules
 - **Read-only**: this command does not modify any files
-- Be **concise**: dashboard + recommendation, that is all
+- Be **concise**: state + dashboard + recommendation, that is all
 - Statuses come from `status.md` files, not estimates
 
 ### Session info
@@ -620,19 +756,88 @@ and propose actions to unblock.
 ENDOFFILE
 
 # ============================================================
-# .claude/commands/new-task.md
+# .claude/commands/breakdown.md
 # ============================================================
-write_if_missing ".claude/commands/new-task.md" <<'ENDOFFILE'
-# /new-task — Create a New Task
-
-## Required argument
-- `$ARGUMENTS`: format `TASK-XXX "Task title" [P0|P1|P2]` (e.g., `TASK-003 "Implement network layer"` or `TASK-003 "Implement network layer" P0`)
+write_if_missing ".claude/commands/breakdown.md" <<'ENDOFFILE'
+# /breakdown — Generate Tasks from Architecture (or Create Single Task)
 
 ## Instructions
 
-You create a new task with its directory structure and templates.
+This command operates in two modes based on `$ARGUMENTS`:
+- **Bulk mode** (no arguments): Analyze architecture + PRD → create all tasks
+- **Single-task mode** (`$ARGUMENTS` starts with `TASK-`): Create one ad-hoc task
 
-### Step 1: Parse arguments
+### Step 0: Detect mode
+
+- If `$ARGUMENTS` is empty → **bulk mode** (go to Step 1)
+- If `$ARGUMENTS` starts with `TASK-` → **single-task mode** (go to Step 1s)
+
+---
+
+## Bulk Mode
+
+### Preconditions (bulk mode only)
+Before starting, verify:
+1. `docs/architecture.md` exists and is not the empty template — if it still contains placeholder text like `[ASCII diagram to be generated]` or `[To be completed by /architect]`, say: "Architecture is still a template. Run `/architect` first to generate the architecture."
+2. `docs/prd.md` exists and is not the empty template — if it still contains placeholder text like `[PROJECT NAME]` or `[1-2 sentences describing the project vision]`, say: "The PRD is still a template. Fill `docs/prd.md` with your project requirements first."
+
+### Step 1: Analyze
+1. Read `docs/architecture.md` in full
+2. Read `docs/prd.md` for feature priorities
+3. Identify discrete implementable units:
+   - Foundation/setup tasks (P0)
+   - Core component tasks (P0-P1)
+   - Feature tasks (P1-P2)
+   - Integration tasks (P2)
+
+### Step 2: Design task list
+For each task, determine:
+- Task ID (sequential: TASK-001, TASK-002, ...)
+- Title (concise, action-oriented)
+- Priority (P0 = must do first, P1 = core, P2 = can wait)
+- Dependencies (which tasks must complete first)
+
+Order: dependency-first (foundations before features).
+
+### Step 3: Create tasks
+For each task, create `tasks/[task_id]/` with the standard file set (see Templates below).
+
+### Step 4: Populate sprint board
+Append all tasks to the `### Todo` section of `docs/current-sprint.md` (preserve any existing entries):
+```
+- TASK-XXX — [Title] (Priority: PX)
+```
+Ordered by priority then dependency.
+
+### Step 5: Display summary
+Show the created tasks:
+```
+Tasks created from architecture:
+
+  TASK-001 — [Title] (P0)
+  TASK-002 — [Title] (P0)
+  TASK-003 — [Title] (P1)
+  ...
+
+Sprint board updated: docs/current-sprint.md
+Next step: /research TASK-001
+```
+
+### Rules (bulk mode)
+- One task per component or feature (not too granular, not too broad)
+- Max 10 tasks per breakdown — if more are needed, split into multiple sprints
+- Foundation tasks always P0
+
+---
+
+## Single-Task Mode
+
+### Required argument (single-task mode)
+- `$ARGUMENTS`: format `TASK-XXX "Task title" [P0|P1|P2]`
+  - Example: `TASK-003 "Implement network layer"`
+  - Example: `TASK-003 "Implement network layer" P0`
+
+### Step 1s: Parse arguments
 Extract:
 - `task_id`: the first word (e.g., TASK-003)
 - `title`: the text in quotes (e.g., Implement network layer)
@@ -640,17 +845,43 @@ Extract:
 
 If arguments are invalid, explain the expected format:
 ```
-Usage: /new-task TASK-XXX "Task title" [P0|P1|P2]
-Example: /new-task TASK-003 "Implement network layer"
-Example: /new-task TASK-003 "Implement network layer" P0
+Usage: /breakdown TASK-XXX "Task title" [P0|P1|P2]
+Example: /breakdown TASK-003 "Implement network layer"
+Example: /breakdown TASK-003 "Implement network layer" P0
 ```
 
-### Step 2: Verify the task does not exist
+### Step 2s: Verify the task does not exist
 - Check that `tasks/[task_id]/` does not already exist
 - If it exists, warn the user and stop
 
-### Step 3: Create the structure
-Create the directory `tasks/[task_id]/` with these files:
+### Step 3s: Create the structure
+Create the directory `tasks/[task_id]/` with the standard file set (see Templates below).
+
+### Step 4s: Update the sprint board
+Add to `docs/current-sprint.md` under `### Todo`:
+```
+- TASK-XXX — [Title] (Priority: [priority])
+```
+
+### Step 5s: Confirm
+Display:
+```
+Task created: [task_id] — [title]
+Directory:    tasks/[task_id]/
+Files:        status.md, research.md, plan.md
+
+Next step: /research [task_id]
+```
+
+### Rules (single-task mode)
+- **Verify before creating** — no duplicates
+- Task ID format: `TASK-XXX` (3 digits minimum)
+- Templates are placeholders — they will be filled by /research and /plan
+- No precondition on architecture.md (ad-hoc tasks don't require it)
+
+---
+
+## Templates (shared by both modes)
 
 #### tasks/[task_id]/status.md
 ```markdown
@@ -659,7 +890,7 @@ Create the directory `tasks/[task_id]/` with these files:
 ## Info
 - Title: [title]
 - Created: [today's date]
-- Priority: [priority]
+- Priority: [P0/P1/P2]
 
 ## Current
 - Status: todo
@@ -725,268 +956,6 @@ Create the directory `tasks/[task_id]/` with these files:
 [To be completed]
 ```
 
-### Step 4: Update the sprint board
-Add to `docs/current-sprint.md` under `### Todo`:
-```
-- TASK-XXX — [Title] (Priority: [priority])
-```
-
-### Step 5: Confirm
-Display:
-```
-Task created: [task_id] — [title]
-Directory:    tasks/[task_id]/
-Files:        status.md, research.md, plan.md
-
-Next step: /research [task_id]
-```
-
-### Rules
-- **Verify before creating** — no duplicates
-- Task ID format: `TASK-XXX` (3 digits minimum)
-- Templates are placeholders — they will be filled by /research and /plan
-ENDOFFILE
-
-# ============================================================
-# .claude/commands/review.md
-# ============================================================
-write_if_missing ".claude/commands/review.md" <<'ENDOFFILE'
-# /review — Critical Plan Review (BMAD QA)
-
-## Required argument
-- `$ARGUMENTS`: task identifier (e.g., TASK-001)
-
-## Instructions
-
-You are the **QA Reviewer** of the BMAD process. Your role is to challenge
-the plan.md with a critical eye before implementation begins.
-
-### Preconditions
-Before starting, verify:
-1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/new-task $ARGUMENTS "Title"` first."
-2. Current status = `plan-ready` — if not, say: "Current status: [status]. This command requires status `plan-ready`. Run `/plan $ARGUMENTS` first."
-
-### Step 1: Load context
-1. Read `tasks/$ARGUMENTS/plan.md` — this is your main subject
-2. Read `tasks/$ARGUMENTS/research.md` — to verify consistency
-3. Read `docs/architecture.md` — to verify architectural compliance
-4. Read `docs/prd.md` — to verify alignment with requirements
-
-### Step 2: Systematic review
-
-Evaluate the plan on these axes:
-
-#### Completeness
-- [ ] All files to modify are listed?
-- [ ] Tests cover critical cases?
-- [ ] Edge cases are addressed?
-- [ ] Nothing is missed compared to research.md?
-
-#### Architectural consistency
-- [ ] Changes respect the documented architecture?
-- [ ] Interfaces between components are preserved?
-- [ ] No violation of existing patterns?
-
-#### Breakdown quality
-- [ ] Each phase is atomic (compilable/testable alone)?
-- [ ] Phase order respects dependencies?
-- [ ] Commit messages are descriptive and follow Conventional Commits?
-
-#### Risks
-- [ ] Identified risks are realistic?
-- [ ] Mitigations are concrete?
-- [ ] Are there unidentified risks?
-
-#### Simplicity
-- [ ] No over-engineering?
-- [ ] No out-of-scope changes?
-- [ ] Simplest solution that works?
-
-### Step 3: Produce the verdict
-
-Display a structured report:
-
-```markdown
-## Review: [TASK-XXX] — [Title]
-
-### Verdict: APPROVED / NEEDS CHANGES / REJECTED
-
-### Positive points
-- [What is good in the plan]
-
-### Issues found
-1. **[Severity: CRITICAL/MAJOR/MINOR]**: [Description]
-   - Location: Phase X, file Y
-   - Suggestion: [How to fix]
-
-2. ...
-
-### Questions for the human
-- [Question requiring a decision]
-
-### Recommendation
-[Summary of what needs to happen before running /implement]
-```
-
-### Actions based on verdict
-- **APPROVED** → The human can run `/implement TASK-XXX`
-- **NEEDS CHANGES** → The human edits plan.md manually, then re-runs `/review TASK-XXX`
-- **REJECTED** → Two options (both accept `plan-ready` as entry state):
-  1. Re-run `/plan TASK-XXX` — re-plan from existing research.md
-  2. Re-run `/research TASK-XXX` — redo research if it was insufficient
-  The status stays `plan-ready`. No manual reset needed — both commands accept this state.
-
-### Rules
-- **Be honest**: a bad plan costs more than a delay
-- **Be constructive**: always propose an alternative
-- **No nitpicking**: focus on issues that impact implementation
-- **DO NOT modify** files — this is a read-only review
-- CRITICAL issues block implementation
-- MAJOR issues should be addressed but do not necessarily block
-- MINOR issues are improvement suggestions
-
-### Session info
-- Context budget: < 30%
-- Recommended model: Opus (critical analysis)
-ENDOFFILE
-
-# ============================================================
-# .claude/commands/breakdown.md
-# ============================================================
-write_if_missing ".claude/commands/breakdown.md" <<'ENDOFFILE'
-# /breakdown — Generate Tasks from Architecture
-
-## Instructions
-
-You analyze the architecture and PRD to create a complete task breakdown.
-
-### Preconditions
-Before starting, verify:
-1. `docs/architecture.md` exists and is not the empty template — if it still contains placeholder text like `[ASCII diagram to be generated]` or `[To be completed by /architect]`, say: "Architecture is still a template. Run `/architect` first to generate the architecture."
-2. `docs/prd.md` exists and is not the empty template — if it still contains placeholder text like `[PROJECT NAME]` or `[1-2 sentences describing the project vision]`, say: "The PRD is still a template. Fill `docs/prd.md` with your project requirements first."
-
-### Step 1: Analyze
-1. Read `docs/architecture.md` in full
-2. Read `docs/prd.md` for feature priorities
-3. Identify discrete implementable units:
-   - Foundation/setup tasks (P0)
-   - Core component tasks (P0-P1)
-   - Feature tasks (P1-P2)
-   - Integration tasks (P2)
-
-### Step 2: Design task list
-For each task, determine:
-- Task ID (sequential: TASK-001, TASK-002, ...)
-- Title (concise, action-oriented)
-- Priority (P0 = must do first, P1 = core, P2 = can wait)
-- Dependencies (which tasks must complete first)
-
-Order: dependency-first (foundations before features).
-
-### Step 3: Create tasks
-For each task, create `tasks/[task_id]/` with these files:
-
-#### tasks/[task_id]/status.md
-```markdown
-# Status: [task_id]
-
-## Info
-- Title: [title]
-- Created: [today's date]
-- Priority: [P0/P1/P2]
-
-## Current
-- Status: todo
-- Current phase: —
-- Last completed: —
-- Date: [today's date]
-
-## Phases
-[To be filled by /implement]
-
-## History
-- [today's date] : Created via /breakdown
-```
-
-#### tasks/[task_id]/research.md
-```markdown
-# Research: [task_id] — [title]
-
-> This file will be filled by `/research [task_id]`
-
-## Context
-[To be completed]
-
-## Scope & acceptance criteria
-[To be completed]
-
-## Relevant files identified
-[To be completed]
-
-## Existing patterns to follow
-[To be completed]
-
-## Reusable code
-[To be completed]
-
-## Dependencies and interfaces
-[To be completed]
-
-## Points of attention
-[To be completed]
-
-## Open questions
-[To be completed]
-```
-
-#### tasks/[task_id]/plan.md
-```markdown
-# Plan: [task_id] — [title]
-
-> This file will be filled by `/plan [task_id]`
-> It will then be reviewed by the human before implementation.
-
-## Context
-[To be completed]
-
-## Planned changes
-[To be completed]
-
-## Identified risks
-[To be completed]
-
-## Estimate
-[To be completed]
-```
-
-### Step 4: Populate sprint board
-Append all tasks to the `### Todo` section of `docs/current-sprint.md` (preserve any existing entries):
-```
-- TASK-XXX — [Title] (Priority: PX)
-```
-Ordered by priority then dependency.
-
-### Step 5: Display summary
-Show the created tasks:
-```
-Tasks created from architecture:
-
-  TASK-001 — [Title] (P0)
-  TASK-002 — [Title] (P0)
-  TASK-003 — [Title] (P1)
-  ...
-
-Sprint board updated: docs/current-sprint.md
-Next step: /research TASK-001
-```
-
-### Rules
-- One task per component or feature (not too granular, not too broad)
-- Max 10 tasks per breakdown — if more are needed, split into multiple sprints
-- Foundation tasks always P0
-- Use the same status.md, research.md, plan.md format as /new-task
-- Human can still add more tasks later with /new-task
-
 ### Session info
 - Context budget: < 40%
 - Recommended model: Sonnet
@@ -1007,7 +976,7 @@ You create a git worktree so the task can be implemented in parallel.
 
 ### Preconditions
 Before starting, verify:
-1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Create the task first with `/new-task` or `/breakdown`."
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Create the task first with `/breakdown TASK-XXX "Title"`."
 2. You are inside a git repository — if not, say: "Not a git repository. Run `git init` first."
 3. No worktree already exists for this task — check with `git worktree list`
 
@@ -1445,76 +1414,6 @@ ENDOFFILE
 chmod +x "$TARGET/.claude/hooks/on-task-completed.sh" 2>/dev/null || true
 
 # ============================================================
-# .claude/commands/help.md
-# ============================================================
-write_if_missing ".claude/commands/help.md" <<'ENDOFFILE'
-# /help — Contextual Guidance
-
-## Instructions
-
-You analyze the current project state and recommend the next action.
-
-### Step 1: Detect project state
-
-Read the following files (skip any that don't exist):
-1. `docs/prd.md` — is it filled or still a template?
-2. `docs/architecture.md` — is it filled or still a template?
-3. `docs/current-sprint.md` — are there tasks listed?
-4. `tasks/*/status.md` — scan all task statuses
-
-### Step 2: Determine recommendation
-
-Based on what you found:
-
-- **No PRD** (or still template) → "Fill `docs/prd.md` with your project requirements, then run `/architect`."
-- **PRD filled, no architecture** (or still template) → "Run `/architect` to generate the architecture."
-- **Architecture filled, no tasks** → "Run `/breakdown` to generate tasks from the architecture."
-- **Tasks exist, none started** → "Run `/research TASK-XXX` on the highest-priority todo task."
-- **A task has status `research-done`** → "Run `/plan TASK-XXX` to create the implementation plan."
-- **A task has status `plan-ready`** → "Review `tasks/TASK-XXX/plan.md`, then run `/implement TASK-XXX` (or `/review TASK-XXX` for a critical review first)."
-- **A task has status `implementing`** → "Run `/implement TASK-XXX` to resume implementation."
-- **All tasks `done`** → "Sprint complete! Create the next sprint or start a new project phase."
-- **A task is `blocked`** → "TASK-XXX is blocked. Check `tasks/TASK-XXX/status.md` for details and resolve the blocker."
-
-### Step 3: Display summary
-
-```
-Project state:
-  PRD:          [filled / template / missing]
-  Architecture: [filled / template / missing]
-  Tasks:        [N total — X done, Y in progress, Z todo]
-
-Recommended next action:
-→ [command or instruction]
-  Reason: [why this is the next step]
-
-Quick reference:
-  /architect          Generate architecture from PRD
-  /breakdown          Generate all tasks from architecture
-  /research TASK-XXX  Explore codebase for a task
-  /plan TASK-XXX      Create implementation plan
-  /review TASK-XXX    Critical review of a plan (optional)
-  /implement TASK-XXX Implement a planned task
-  /sprint             View sprint dashboard
-  /new-task           Create a task manually
-  /worktree TASK-XXX  Create git worktree for parallel work
-  /swarm TASK-A,B,C   Parallel agent team orchestration
-  /merge-task TASK-XXX Merge completed task branch to main
-  /fix "description"  Quick bug fix (bypasses full FIC cycle)
-  /help               This command
-```
-
-### Rules
-- **Read-only**: this command does not modify any files
-- Be **concise**: state + recommendation + reference, nothing more
-- Keep the session **short** (< 10% context)
-
-### Session info
-- Context budget: < 10%
-- Recommended model: any
-ENDOFFILE
-
-# ============================================================
 # .claude/commands/fix.md
 # ============================================================
 write_if_missing ".claude/commands/fix.md" <<'ENDOFFILE'
@@ -1537,7 +1436,7 @@ Use this for small, well-understood bugs — not for features or large changes.
 1. Identify the root cause
 2. Identify affected files (should be 1-3 files max)
 3. If more than 3 files are affected, say:
-   "This bug is too large for `/fix`. Use the full FIC cycle: `/new-task`, `/research`, `/plan`, `/implement`."
+   "This bug is too large for `/fix`. Use the full FIC cycle: `/breakdown TASK-XXX "Title"`, `/research`, `/plan`, `/implement`."
    Then stop.
 
 ### Step 3: Propose the fix

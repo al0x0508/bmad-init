@@ -71,43 +71,42 @@ Each `/research`, `/plan`, and `/implement` should run in a **separate Claude Co
 Each task follows a strict state machine. Commands transition between states:
 
 ```
-         ┌──────────┐         ┌─────────────┐
-         │ (create) │         │ (create N)  │
-         └─────┬────┘         └──────┬──────┘
-               │ /new-task           │ /breakdown
-               └──────────┬──────────┘
-                          ▼
-                    ┌──────────┐
-                    │   todo   │
-                    └─────┬────┘
-                          │ /research
-                          ▼
-                 ┌────────────────┐
-                 │ research-done  │
-                 └───────┬────────┘
-                         │ /plan
-                         ▼
-                  ┌─────────────┐
-            ┌────▶│  plan-ready  │◀─────────────────┐
-            │     └──────┬───────┘                  │
-            │            │                    /review (read-only)
-  /research │            │ /implement               │
-  or /plan  │            ▼                          │
-  (re-entry)│   ┌────────────────┐                  │
-            │   │  implementing  │──────────────────┘
-            │   └───────┬────────┘
-            │           │
-            │     ┌─────┴──────┐
-            │     │            │
-            │all phases    (manual)
-            │completed     edit status
-            │     │            │
-            │     ▼            ▼
-            │┌──────────┐ ┌──────────┐
-            ││   done   │ │ blocked  │
-            │└──────────┘ └──────────┘
+                  ┌─────────────────────┐
+                  │  /breakdown         │
+                  │  (bulk or single)   │
+                  └──────────┬──────────┘
+                             ▼
+                       ┌──────────┐
+                       │   todo   │
+                       └─────┬────┘
+                             │ /research
+                             ▼
+                    ┌────────────────┐
+                    │ research-done  │
+                    └───────┬────────┘
+                            │ /plan [--review]
+                            ▼
+                     ┌─────────────┐
+            ┌───────▶│  plan-ready  │
+            │        └──────┬───────┘
+            │               │
+  /research │               │ /implement
+  or /plan  │               ▼
+  (re-entry)│      ┌────────────────┐
+            │      │  implementing  │
+            │      └───────┬────────┘
+            │              │
+            │        ┌─────┴──────┐
+            │        │            │
+            │   all phases    (manual)
+            │   completed     edit status
+            │        │            │
+            │        ▼            ▼
+            │   ┌──────────┐ ┌──────────┐
+            │   │   done   │ │ blocked  │
+            │   └──────────┘ └──────────┘
             │
-            └── /review REJECTED path
+            └── /plan --review REJECTED path
 ```
 
 ### Session Workflow
@@ -149,14 +148,14 @@ bmad-init
 │   └── writes: docs/architecture.md
 │                docs/components/*.md
 │
-├── /breakdown
+├── /breakdown (bulk mode)
 │   ├── reads:  docs/architecture.md, docs/prd.md
 │   └── writes: tasks/TASK-*/status.md       (all tasks)
 │                tasks/TASK-*/research.md     (templates)
 │                tasks/TASK-*/plan.md         (templates)
 │                docs/current-sprint.md       (all entries)
 │
-├── /new-task TASK-001
+├── /breakdown TASK-001 "Title" (single-task mode)
 │   └── writes: tasks/TASK-001/status.md
 │                tasks/TASK-001/research.md  (template)
 │                tasks/TASK-001/plan.md      (template)
@@ -175,11 +174,9 @@ bmad-init
 │   └── writes: tasks/TASK-001/plan.md
 │                tasks/TASK-001/status.md    (→ plan-ready)
 │
-├── /review TASK-001
-│   ├── reads:  tasks/TASK-001/plan.md
-│   │            tasks/TASK-001/research.md
-│   │            docs/architecture.md, docs/prd.md
-│   └── writes: nothing (read-only)
+├── /plan --review TASK-001 (optional, adds QA review after planning)
+│   ├── reads:  (same as /plan) + docs/prd.md
+│   └── writes: tasks/TASK-001/plan.md, status.md (+ displays review verdict)
 │
 ├── /implement TASK-001
 │   ├── reads:  tasks/TASK-001/plan.md
@@ -209,9 +206,9 @@ bmad-init
 │                removes worktree + branch
 │
 └── /sprint
-    ├── reads:  docs/current-sprint.md
-    │            tasks/*/status.md
-    └── writes: nothing (read-only)
+    ├── reads:  docs/prd.md, docs/architecture.md
+    │            docs/current-sprint.md, tasks/*/status.md
+    └── writes: nothing (read-only, detects bootstrap vs sprint mode)
 ```
 
 ## The FIC Methodology
@@ -236,19 +233,16 @@ The result is higher-quality output with lower token costs and a built-in review
 
 | Command | Argument | Reads | Writes | Precondition |
 |---------|----------|-------|--------|-------------|
-| `/help` | — | `prd.md`, `architecture.md`, `current-sprint.md`, `tasks/*/status.md` | nothing | — |
+| `/sprint` | — | `prd.md`, `architecture.md`, `current-sprint.md`, `tasks/*/status.md` | nothing | — |
 | `/architect` | — | `docs/prd.md` | `docs/architecture.md`, `docs/components/*.md` | PRD is filled (not template) |
-| `/breakdown` | — | `docs/architecture.md`, `docs/prd.md` | `tasks/TASK-*/{status,research,plan}.md`, `current-sprint.md` | Architecture is filled (not template) |
-| `/new-task` | `TASK-XXX "Title" [P0\|P1\|P2]` | — | `tasks/TASK-XXX/{status,research,plan}.md` | Task does not exist |
+| `/breakdown` | — or `TASK-XXX "Title" [P0\|P1\|P2]` | `docs/architecture.md`, `docs/prd.md` (bulk) or — (single) | `tasks/TASK-*/{status,research,plan}.md`, `current-sprint.md` | Architecture filled (bulk) or task doesn't exist (single) |
 | `/research` | `TASK-XXX` | `status.md`, `prd.md`, `architecture.md`, `src/` | `research.md`, `status.md` | status = `todo` or `plan-ready` |
-| `/plan` | `TASK-XXX` | `research.md`, `architecture.md` | `plan.md`, `status.md` | status = `research-done` or `plan-ready` |
-| `/review` | `TASK-XXX` | `plan.md`, `research.md`, `architecture.md`, `prd.md` | nothing | status = `plan-ready` |
+| `/plan` | `[--review] TASK-XXX` | `research.md`, `architecture.md` (+ `prd.md` with `--review`) | `plan.md`, `status.md` | status = `research-done` or `plan-ready` |
 | `/implement` | `TASK-XXX` | `plan.md`, `status.md` | `src/`, `tests/`, `status.md`, `current-sprint.md` | status = `plan-ready` or `implementing` |
 | `/fix` | `"bug description"` | `architecture.md`, `src/` | `src/`, `tests/` | — |
 | `/worktree` | `TASK-XXX` | `status.md` | git worktree + branch | Task exists, inside git repo |
 | `/swarm` | `TASK-A,TASK-B,...` | `tasks/*/status.md` | worktrees, branches, agent coordination | Agent Teams enabled, clean main branch |
 | `/merge-task` | `TASK-XXX` | `status.md`, branch diff | merge commit, cleanup worktree + branch | status = `done`, branch exists |
-| `/sprint` | — | `current-sprint.md`, `tasks/*/status.md` | nothing | — |
 
 ## File Structure
 
@@ -260,16 +254,13 @@ my-project/
 │   ├── CLAUDE.md                ← Project instructions for Claude
 │   ├── commands/
 │   │   ├── architect.md         ← /architect command
-│   │   ├── breakdown.md         ← /breakdown command
+│   │   ├── breakdown.md         ← /breakdown command (bulk + single-task)
 │   │   ├── fix.md               ← /fix command
-│   │   ├── help.md              ← /help command
 │   │   ├── implement.md         ← /implement command
 │   │   ├── merge-task.md        ← /merge-task command
-│   │   ├── new-task.md          ← /new-task command
-│   │   ├── plan.md              ← /plan command
+│   │   ├── plan.md              ← /plan command (supports --review flag)
 │   │   ├── research.md          ← /research command
-│   │   ├── review.md            ← /review command
-│   │   ├── sprint.md            ← /sprint command
+│   │   ├── sprint.md            ← /sprint command (project status + dashboard)
 │   │   ├── swarm.md             ← /swarm command (Agent Teams)
 │   │   └── worktree.md          ← /worktree command
 │   └── hooks/
@@ -375,8 +366,8 @@ bmad-init includes `.claude/hooks/on-task-completed.sh` which auto-detects your 
 **Can I skip `/research`?**
 Not recommended. `/plan` relies on the context gathered during research. Without it, the plan will be generic and miss project-specific patterns, reusable code, and dependencies.
 
-**Do I have to run `/review`?**
-No, `/review` is optional. You can go straight from `/plan` to `/implement` after reviewing plan.md yourself. The `/review` command is useful when you want Claude to do an extra critical pass before you review.
+**Do I have to use `--review` with `/plan`?**
+No, the `--review` flag is optional. You can run `/plan TASK-XXX` alone and review plan.md yourself. Use `/plan --review TASK-XXX` when you want Claude to do an extra critical QA pass (completeness, architectural consistency, risks) after generating the plan.
 
 **How do I block a task?**
 Edit `tasks/TASK-XXX/status.md` manually and set status = `blocked`. To unblock, set it back to `implementing` or `plan-ready` as appropriate. There is no `/block` command — this is intentional to keep things simple.
@@ -388,10 +379,10 @@ No. Start with a rough version and iterate. You can re-run `/architect` at any t
 `/architect` can be re-run freely. For task commands, the precondition checks enforce the correct order. If you need to redo research or planning, manually reset the status in `status.md`.
 
 **Can I still create tasks manually?**
-Yes. `/new-task` still works for ad-hoc tasks. `/breakdown` generates all tasks from the architecture in one shot, but you can add more tasks individually at any time.
+Yes. Use `/breakdown TASK-XXX "Title"` to create a single ad-hoc task. Without arguments, `/breakdown` generates all tasks from the architecture in one shot.
 
 **When should I use `/fix` vs the full cycle?**
-Use `/fix` for small, well-understood bugs that affect 1-3 files. Use the full FIC cycle (`/new-task` → `/research` → `/plan` → `/implement`) for anything larger, any new feature, or any change that requires architectural understanding. `/fix` will tell you to escalate if the bug is too big.
+Use `/fix` for small, well-understood bugs that affect 1-3 files. Use the full FIC cycle (`/breakdown TASK-XXX "Title"` → `/research` → `/plan` → `/implement`) for anything larger, any new feature, or any change that requires architectural understanding. `/fix` will tell you to escalate if the bug is too big.
 
 **What if `/implement` gets interrupted mid-task?**
 Re-run `/implement TASK-XXX` in a new session. The resumption algorithm reads `status.md` to find the last completed phase and picks up from the next one.
