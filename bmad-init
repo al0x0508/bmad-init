@@ -49,7 +49,7 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 
 ### For parallel work
 - `/worktree TASK-XXX` → creates a git worktree for the task
-- `/swarm TASK-032,TASK-033,...` → orchestrate N agents in parallel (Agent Teams)
+- `/swarm TASK-032,TASK-033,...` → orchestrate N agents in parallel (tmux-cli)
 - `/merge-task TASK-XXX` → merge completed task branch to main
 
 ### Available Commands
@@ -62,7 +62,7 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 - `/implement TASK-XXX` → FIC Phase 3: read plan.md, implement phase by phase
 - `/fix "description"` → Quick bug fix (bypasses full FIC cycle)
 - `/worktree TASK-XXX` → Create git worktree for parallel work
-- `/swarm TASK-A,TASK-B,...` → Parallel agent team orchestration
+- `/swarm TASK-A,TASK-B,...` → Parallel tmux-cli orchestration
 - `/merge-task TASK-XXX` → Merge completed task branch to main
 
 ### Blocking/Unblocking a task
@@ -352,6 +352,12 @@ Display a structured report:
   2. Re-run `/research [task_id]` — redo research if it was insufficient
   The status stays `plan-ready`. No manual reset needed — both commands accept this state.
 
+**On NEEDS CHANGES or REJECTED**: Add a history entry in `tasks/[task_id]/status.md`:
+```
+- [date] — Plan review: [VERDICT] (reason: [one-line summary])
+```
+This allows distinguishing fresh plans from reviewed-and-rejected plans in the history.
+
 #### Review rules
 - **Be honest**: a bad plan costs more than a delay
 - **Be constructive**: always propose an alternative
@@ -397,6 +403,7 @@ You are in **FIC Phase 3 (Focused Intelligence Cycle)**: Implementation.
 Before starting, verify:
 1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found. Run `/breakdown $ARGUMENTS "Title"` first."
 2. Current status = `plan-ready` or `implementing` — if not, say: "Current status: [status]. This command requires status `plan-ready` or `implementing`. Run `/plan $ARGUMENTS` first, or reset the status in `tasks/$ARGUMENTS/status.md`."
+3. `tasks/$ARGUMENTS/plan.md` contains at least one `### Phase` heading (not just the template placeholder). If plan.md is empty, missing, or still contains only `[To be completed]`: STOP — "Plan is empty or still a template. Run `/plan $ARGUMENTS` first."
 
 ### Step 1: Load the plan
 1. Read `tasks/$ARGUMENTS/status.md` — verify status is `plan-ready` or `implementing`
@@ -434,8 +441,9 @@ For **each phase** in plan.md:
 5. **Write the tests** listed in the phase
 6. **Run the tests** to verify everything passes
 7. **Commit** with the message from the plan
+   Stage ONLY the files you created or modified in this phase. NEVER use `git add -A` or `git add .` — this risks staging secrets, .env files, or editor artifacts.
    ```bash
-   git add -A && git commit -m "message from plan"
+   git add [list files changed in this phase] && git commit -m "message from plan"
    ```
 8. **Mark phase complete in status.md**:
    - In `## Phases`: change `[ ]` to `[x]` for this phase, add commit hash
@@ -677,7 +685,7 @@ Quick reference:
   /implement TASK-XXX      Implement a planned task
   /fix "description"       Quick bug fix (bypasses full FIC cycle)
   /worktree TASK-XXX       Create git worktree for parallel work
-  /swarm TASK-A,B,C        Parallel agent team orchestration
+  /swarm TASK-A,B,C        Parallel tmux-cli orchestration
   /merge-task TASK-XXX     Merge completed task branch to main
 ```
 
@@ -1019,24 +1027,26 @@ ENDOFFILE
 # .claude/commands/swarm.md
 # ============================================================
 write_if_missing ".claude/commands/swarm.md" <<'ENDOFFILE'
-# /swarm — Parallel Agent Team Orchestration
+# /swarm — Parallel tmux-cli Orchestration
 
 ## Required argument
 - `$ARGUMENTS`: comma-separated list of TASK-IDs (e.g., `TASK-032,TASK-033,TASK-034`)
 
 ## Instructions
 
-You are the **Lead Agent** orchestrating a parallel Agent Team (swarm).
-Your role: create worktrees, spawn teammates, coordinate the FIC workflow, and merge results.
+You are the **Master Claude** orchestrating parallel workers via tmux-cli.
+Each worker is a real `claude` process running in its own tmux pane, visible and accessible.
+Coordination via polling `status.md` on disk — no Agent Teams, no inter-agent messaging.
 
 **You MUST operate in delegate mode** — you do NOT write code yourself.
 
 ### Preconditions
 Before starting, verify:
-1. Agent Teams is enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set)
-2. You are inside a git repository on the main branch
-3. Working tree is clean (`git status` shows no uncommitted changes)
-4. All requested tasks exist in `tasks/TASK-XXX/status.md`
+1. You are inside tmux (`$TMUX` env var is non-empty)
+2. `tmux-cli` is available (`which tmux-cli`)
+3. You are inside a git repository on the main branch
+4. Working tree is clean (`git status` shows no uncommitted changes)
+5. All requested tasks exist in `tasks/TASK-XXX/status.md`
 
 ### Step 1: Resolve task list
 
@@ -1046,11 +1056,15 @@ Parse `$ARGUMENTS`:
 
 For each task:
 1. Read `tasks/TASK-XXX/status.md`
-2. Verify status is `todo`, `research-done`, or `plan-ready`
+2. Determine start phase:
+   - `todo` → needs /research + /plan
+   - `research-done` → needs /plan only
+   - `plan-ready` → skip to review gate (no pane needed yet)
+   - `implementing` → needs resume (launch pane, send /implement TASK-XXX)
+   - other → skip with warning: "Skipping TASK-XXX (status: [status])"
 3. Get the task title
-4. If status is invalid, skip the task and warn: "Skipping TASK-XXX (status: [status])"
 
-**Max 5 tasks per swarm** — if more are provided, say: "Max 5 concurrent agents. Split into batches."
+**Max 5 tasks per swarm** — if more are provided, say: "Max 5 concurrent workers. Split into batches."
 
 ### Step 2: Create worktrees
 
@@ -1061,7 +1075,13 @@ For each valid task:
    ```bash
    git worktree add [directory] -b [branch-name]
    ```
-4. Install dependencies in the worktree (suppress output, just check exit code)
+4. Skip if worktree already exists (reconnect mode — reuse existing)
+5. Auto-detect and install dependencies:
+   - `pnpm-lock.yaml` → `pnpm install`
+   - `yarn.lock` → `yarn install`
+   - `package-lock.json` → `npm install`
+   - `Cargo.toml` → `cargo build`
+   - `requirements.txt` → `pip install -r requirements.txt`
 
 Display progress:
 ```
@@ -1071,49 +1091,59 @@ Creating worktrees...
   Dependencies installed: done
 ```
 
-### Step 3: Spawn teammates
+### Step 3: Launch worker panes
 
-For each task, spawn a teammate agent:
-- **Model**: Sonnet
-- **Working directory**: the worktree created in Step 2
-- **Name**: `worker-TASK-XXX`
+For each task that needs research, plan, or implementation resume:
+1. `tmux-cli launch "$SHELL"` → get PANE_ID
+2. `tmux-cli send "cd ../[project-dir]-TASK-XXX" --pane=PANE_ID`
+3. `tmux-cli send "claude --dangerously-skip-permissions --model sonnet" --pane=PANE_ID`
+4. `tmux-cli wait_idle --pane=PANE_ID --idle-time=5 --timeout=60`
+5. Store mapping: TASK-XXX → { pane: PANE_ID, dir: ../[project-dir]-TASK-XXX }
 
-Each teammate receives this prompt:
+Display pane assignments:
 ```
-You are a worker agent implementing a task in its own git worktree.
-
-Task: TASK-XXX
-Working directory: ../[project-dir]-TASK-XXX
-
-When messaging the lead, use the SendMessage tool with type "message" and recipient "lead".
-You have access to all project skills (/research, /plan, /implement) from your worktree CWD.
-
-Phase 1 — Research & Plan:
-1. Run /research TASK-XXX
-2. Run /plan TASK-XXX
-3. When both are done, message the lead: "TASK-XXX plan ready for review"
-4. STOP and wait for further instructions
-
-Do NOT start implementation until explicitly told to proceed.
-```
-
-Display:
-```
-Spawning teammates...
-  worker-TASK-032 → Sonnet (research + plan)
-  worker-TASK-033 → Sonnet (research + plan)
+Launching workers...
+  TASK-032 → pane 0:6.2 (research + plan)
+  TASK-033 → pane 0:6.3 (plan only)
   ...
 
-All teammates spawned. They will research and plan in parallel.
-Estimated time: 30-60 minutes.
+All workers launched. Visible in tmux — switch with Ctrl-b + arrow keys.
 ```
 
-### Step 4: Monitor progress
+### Step 4: Send FIC commands
 
-Wait for all teammates to report their plans are ready.
-Periodically check teammate status.
+For each task based on start phase:
+- `todo`: `tmux-cli send "/research TASK-XXX" --pane=PANE_ID`
+- `research-done`: `tmux-cli send "/plan TASK-XXX" --pane=PANE_ID`
+- `implementing`: `tmux-cli send "/implement TASK-XXX" --pane=PANE_ID` (skip to Step 8 polling)
 
-When all plans are ready, display:
+Stagger sends: 2-3 second delay between each to avoid resource spikes.
+
+### Step 5: Polling loop — Research & Plan
+
+LOOP every 30 seconds:
+1. For each active task:
+   - Read `../[project-dir]-TASK-XXX/tasks/TASK-XXX/status.md` (from worker worktree — each worktree has its own copy)
+   - If `research-done` AND /plan not yet sent → `tmux-cli send "/plan TASK-XXX" --pane=PANE_ID`
+   - If `plan-ready` → mark task as review-ready
+2. Display dashboard:
+   ```
+   ┌──────────┬──────────────┬──────────┬──────────┐
+   │  Task    │  Phase       │  Status  │  Pane    │
+   ├──────────┼──────────────┼──────────┼──────────┤
+   │ TASK-032 │ research     │ running  │ 0:6.2    │
+   │ TASK-033 │ plan         │ running  │ 0:6.3    │
+   │ TASK-034 │ plan-ready   │ done     │ —        │
+   └──────────┴──────────────┴──────────┴──────────┘
+   ```
+3. Stall detection: 15 min without status change → capture pane output, warn user
+4. Worker crash detection: `tmux-cli list_panes` → if pane missing, warn user
+
+UNTIL all tasks are plan-ready.
+
+### Step 6: BATCH REVIEW GATE
+
+Display plan paths for user review:
 ```
 ┌──────────────────────────────────────────────────────────┐
 │  BATCH REVIEW GATE                                       │
@@ -1121,14 +1151,14 @@ When all plans are ready, display:
 │                                                          │
 │  All N plans are ready for your review:                  │
 │                                                          │
-│  1. tasks/TASK-XXX/plan.md                               │
-│  2. tasks/TASK-YYY/plan.md                               │
+│  1. ../[project]-TASK-XXX/tasks/TASK-XXX/plan.md          │
+│  2. ../[project]-TASK-YYY/tasks/TASK-YYY/plan.md          │
 │  ...                                                     │
 │                                                          │
 │  Review each plan (~10-15 min each), then tell me:       │
 │  • "approve all" — implement all tasks                   │
 │  • "approve TASK-XXX,TASK-YYY" — implement specific ones │
-│  • "reject TASK-ZZZ" — teammate revises the plan         │
+│  • "reject TASK-ZZZ" — worker revises the plan           │
 │                                                          │
 │  Take your time. No implementation starts without your   │
 │  explicit approval.                                      │
@@ -1136,32 +1166,39 @@ When all plans are ready, display:
 └──────────────────────────────────────────────────────────┘
 ```
 
-### Step 5: Handle review decisions
+### Step 7: Handle review decisions
 
 **On approve:**
-Message the approved teammates:
-```
-Your plan for TASK-XXX has been approved. Run /implement TASK-XXX now.
-```
+- `tmux-cli send "/implement TASK-XXX" --pane=PANE_ID`
+- If task was `plan-ready` from start (no pane yet), launch a new pane first (Step 3 flow)
 
 **On reject:**
-Message the rejected teammates:
-```
-Your plan for TASK-XXX needs revision. [User's feedback here].
-Please revise the plan and message me when ready.
-```
+- `tmux-cli send "/plan TASK-XXX" --pane=PANE_ID`
+- Then send feedback as follow-up: `tmux-cli send "Revision requested: [user's feedback]" --pane=PANE_ID`
+- Re-enter polling loop for rejected tasks
 
-### Step 6: Monitor implementation
+### Step 8: Polling loop — Implementation
 
-Wait for teammates to finish implementation.
-Each teammate will:
-1. Run `/implement TASK-XXX`
-2. Commit phase by phase
-3. Message lead when all phases are done
+LOOP every 60 seconds:
+1. Read `../[project-dir]-TASK-XXX/tasks/TASK-XXX/status.md` for each implementing task (from worker worktree)
+2. Parse phase progress (Phase X/Y) from status.md
+3. If status = `done` → mark ready for merge
+4. Display implementation dashboard:
+   ```
+   ┌──────────┬──────────────┬──────────┬──────────┐
+   │  Task    │  Progress    │  Status  │  Pane    │
+   ├──────────┼──────────────┼──────────┼──────────┤
+   │ TASK-032 │ Phase 2/4    │ running  │ 0:6.2    │
+   │ TASK-033 │ Phase 3/3    │ done     │ 0:6.3    │
+   └──────────┴──────────────┴──────────┴──────────┘
+   ```
+5. Stall detection: 20 min on same phase → warn user
 
-### Step 7: Sequential merge
+UNTIL all approved tasks are done.
 
-When a teammate finishes, merge its branch to main **one at a time**:
+### Step 9: Sequential merge
+
+Merge completed tasks one at a time:
 
 ```bash
 git checkout main
@@ -1170,7 +1207,7 @@ git merge --no-ff feat/task-xxx-title
 ```
 
 **If merge succeeds:**
-1. Run the project quality gate (e.g., verify/test command)
+1. Run the project quality gate (auto-detect toolchain: pnpm/yarn/npm/make/cargo/pytest)
 2. If quality gate passes → proceed
 3. If quality gate fails → STOP, notify user
 
@@ -1193,19 +1230,21 @@ cd ../[project-dir]-TASK-YYY
 git rebase main
 ```
 
-### Step 8: Cleanup
+### Step 10: Cleanup
 
 After all merges (or when user says stop):
-1. Remove completed worktrees:
+1. Kill worker panes: `tmux-cli kill --pane=PANE_ID`
+2. Remove completed worktrees:
    ```bash
    git worktree remove ../[project-dir]-TASK-XXX
    ```
-2. Delete merged branches:
+3. Delete merged branches:
    ```bash
    git branch -d feat/task-xxx-title
    ```
+4. Skip cleanup for conflicted tasks
 
-### Step 9: Final summary
+### Step 11: Final summary
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -1227,15 +1266,37 @@ After all merges (or when user says stop):
 └──────────────────────────────────────────────────────────┘
 ```
 
+### Adding tasks on-the-fly
+
+To add a task to a running swarm:
+1. Master runs `/breakdown TASK-XXX "Title"` (creates task in main worktree)
+2. Master creates worktree: `git worktree add ../[project-dir]-TASK-XXX -b feat/task-xxx-title`
+3. Master launches a new pane (same as Step 3)
+4. Master sends FIC commands (same as Step 4)
+5. New task joins the current polling loop
+
+The master can do this at any point — during the review gate wait,
+or while other workers are implementing.
+Max 5 total workers still applies.
+
+### Error handling
+
+- **Worker pane dies**: detect via `tmux-cli list_panes`, offer relaunch/skip/abort
+- **Worker stuck**: stall timeout (15 min research/plan, 20 min implement), capture pane output, warn user
+- **Master crash**: workers continue in their panes; re-run `/swarm` with same tasks to reconnect (detects existing worktrees + panes)
+- **Reconnect mode**: if worktrees already exist, skip creation and reattach to existing panes
+
 ### Strict rules
 
-- **DELEGATE ONLY**: the lead agent does NOT write code
+- **DELEGATE ONLY**: the master does NOT write code
 - **NO IMPLEMENTATION WITHOUT REVIEW**: all plans MUST be approved by the user
 - **SEQUENTIAL MERGE**: merge one branch at a time, rebase others after
 - **STOP ON CONFLICT**: never auto-resolve merge conflicts
-- **MAX 5 AGENTS**: refuse to spawn more than 5 concurrent teammates
+- **MAX 5 WORKERS**: refuse to launch more than 5 concurrent panes
 - **QUALITY GATE**: quality gate must pass on main after each merge
-- **CLEANUP**: always clean up worktrees when done (unless conflicts remain)
+- **VISIBLE WORKERS**: user can switch to any worker pane in tmux
+- **CLEANUP**: always clean up worktrees + panes when done (unless conflicts remain)
+- **NO AGENT TEAMS**: use tmux-cli only, never TeamCreate/SendMessage/Agent Teams APIs
 
 ### Merge priority order
 
@@ -1245,9 +1306,9 @@ Within a batch, merge in this order:
 3. Tasks touching shared files last
 
 ### Session info
-- Context budget: unlimited (lead agent, long-running)
-- Recommended model: Opus (lead), Sonnet (teammates)
-- Mode: delegate
+- Context budget: long-running, keep polling reads minimal
+- Recommended model: Opus (master), Sonnet (workers via --model flag)
+- Coordination: filesystem (status.md), not agent messaging
 ENDOFFILE
 
 # ============================================================
@@ -1370,12 +1431,32 @@ Merge complete: $ARGUMENTS — [title]
 ENDOFFILE
 
 # ============================================================
+# .claude/settings.json (hook registration for TaskCompleted)
+# ============================================================
+write_if_missing ".claude/settings.json" <<'ENDOFFILE'
+{
+  "hooks": {
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/on-task-completed.sh",
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}
+ENDOFFILE
+
+# ============================================================
 # .claude/hooks/on-task-completed.sh
 # ============================================================
 write_if_missing ".claude/hooks/on-task-completed.sh" <<'ENDOFFILE'
-#!/bin/bash
-# Quality gate: verify code compiles and passes tests before task completion
-# Called by Claude Code Agent Teams hook: TaskCompleted
+#!/usr/bin/env bash
+# Quality gate hook: runs verify command before task completion
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -1383,11 +1464,32 @@ cd "$(git rev-parse --show-toplevel)"
 # Auto-detect verify command
 if [ -f "package.json" ]; then
   if command -v pnpm &>/dev/null && [ -f "pnpm-lock.yaml" ]; then
-    VERIFY_CMD="pnpm verify"
+    if jq -e '.scripts.verify' package.json >/dev/null 2>&1; then
+      VERIFY_CMD="pnpm verify"
+    elif jq -e '.scripts.test' package.json >/dev/null 2>&1; then
+      VERIFY_CMD="pnpm test"
+    else
+      echo "⚠ No verify or test script found in package.json, skipping quality gate"
+      exit 0
+    fi
   elif command -v yarn &>/dev/null && [ -f "yarn.lock" ]; then
-    VERIFY_CMD="yarn verify"
+    if jq -e '.scripts.verify' package.json >/dev/null 2>&1; then
+      VERIFY_CMD="yarn verify"
+    elif jq -e '.scripts.test' package.json >/dev/null 2>&1; then
+      VERIFY_CMD="yarn test"
+    else
+      echo "⚠ No verify or test script found in package.json, skipping quality gate"
+      exit 0
+    fi
   elif command -v npm &>/dev/null; then
-    VERIFY_CMD="npm run verify"
+    if jq -e '.scripts.verify' package.json >/dev/null 2>&1; then
+      VERIFY_CMD="npm run verify"
+    elif jq -e '.scripts.test' package.json >/dev/null 2>&1; then
+      VERIFY_CMD="npm test"
+    else
+      echo "⚠ No verify or test script found in package.json, skipping quality gate"
+      exit 0
+    fi
   fi
 elif [ -f "Makefile" ] && grep -q "^verify:" Makefile; then
   VERIFY_CMD="make verify"
@@ -1403,7 +1505,8 @@ if [ -z "${VERIFY_CMD:-}" ]; then
 fi
 
 echo "Running quality gate ($VERIFY_CMD)..."
-$VERIFY_CMD 2>&1 || {
+read -ra VERIFY_ARRAY <<< "$VERIFY_CMD"
+"${VERIFY_ARRAY[@]}" 2>&1 || {
   echo "BLOCKED: $VERIFY_CMD failed. Fix errors before completing." >&2
   exit 2
 }
@@ -1601,5 +1704,5 @@ echo "  3. /architect           → generate architecture"
 echo "  4. /breakdown           → generate all tasks"
 echo "  5. /sprint              → see what to do next"
 echo ""
-echo "For parallel work with Agent Teams:"
+echo "For parallel work (tmux-cli):"
 echo "  /swarm TASK-A,TASK-B    → orchestrate N agents in parallel"

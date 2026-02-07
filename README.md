@@ -241,7 +241,7 @@ The result is higher-quality output with lower token costs and a built-in review
 | `/implement` | `TASK-XXX` | `plan.md`, `status.md` | `src/`, `tests/`, `status.md`, `current-sprint.md` | status = `plan-ready` or `implementing` |
 | `/fix` | `"bug description"` | `architecture.md`, `src/` | `src/`, `tests/` | — |
 | `/worktree` | `TASK-XXX` | `status.md` | git worktree + branch | Task exists, inside git repo |
-| `/swarm` | `TASK-A,TASK-B,...` | `tasks/*/status.md` | worktrees, branches, agent coordination | Agent Teams enabled, clean main branch |
+| `/swarm` | `TASK-A,TASK-B,...` | `tasks/*/status.md` | worktrees, branches, tmux-cli coordination | tmux + tmux-cli, clean main branch |
 | `/merge-task` | `TASK-XXX` | `status.md`, branch diff | merge commit, cleanup worktree + branch | status = `done`, branch exists |
 
 ## File Structure
@@ -261,7 +261,7 @@ my-project/
 │   │   ├── plan.md              ← /plan command (supports --review flag)
 │   │   ├── research.md          ← /research command
 │   │   ├── sprint.md            ← /sprint command (project status + dashboard)
-│   │   ├── swarm.md             ← /swarm command (Agent Teams)
+│   │   ├── swarm.md             ← /swarm command (tmux-cli orchestration)
 │   │   └── worktree.md          ← /worktree command
 │   └── hooks/
 │       └── on-task-completed.sh ← Quality gate hook (auto-detects toolchain)
@@ -280,7 +280,7 @@ my-project/
 
 ## Parallel Work
 
-bmad-init supports two modes of parallel development: manual worktrees and fully automated Agent Teams.
+bmad-init supports two modes of parallel development: manual worktrees and fully automated tmux-cli orchestration.
 
 ### Manual Worktrees
 
@@ -324,39 +324,321 @@ When done, merge back with `/merge-task`:
 
 Each worktree gets its own Claude Code session with independent context.
 
-### Agent Teams (Swarm)
+### Complete lifecycle (before /swarm)
 
-For fully automated parallel work, use `/swarm`. A lead agent creates worktrees, spawns teammate agents, coordinates the full FIC cycle, and merges results — all in one session:
+Before running `/swarm`, the project must be bootstrapped:
+
+```
+┌──────────────────┐
+│  1. Write PRD    │
+│  docs/prd.md     │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  2. /architect   │
+│  → architecture  │
+│  → components/   │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  3. Review       │
+│  architecture.md │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  4. /breakdown   │
+│  → tasks/TASK-*  │
+│  → sprint board  │
+└────────┬─────────┘
+         │
+         ▼
+┌──────────────────┐
+│  5. /swarm       │
+│  TASK-A,TASK-B   │
+│  (parallel FIC)  │
+└──────────────────┘
+```
+
+Steps 1-4 produce the task definitions that `/swarm` needs. Without them, there are no `tasks/TASK-XXX/status.md` files to drive the workflow.
+
+### Automated Swarm (tmux-cli)
+
+For fully automated parallel work, use `/swarm`. A master Claude orchestrates workers via tmux-cli — each worker is a real `claude` process in its own tmux pane, visible and accessible:
 
 ```bash
-# Inside Claude Code:
+# Inside Claude Code (must be running in tmux):
 /swarm TASK-002,TASK-003,TASK-004
 ```
 
-The lead agent (you) orchestrates the following flow:
+#### Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│  /swarm TASK-002,TASK-003,TASK-004                               │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│  1. Create worktrees (one per task)                              │
-│  2. Spawn teammate agents (Sonnet, one per worktree)             │
-│  3. Teammates run /research + /plan in parallel                  │
-│  4. ── BATCH REVIEW GATE ── you review all plans                 │
-│  5. Approve/reject → teammates run /implement                    │
-│  6. Sequential merge to main (smallest first)                    │
-│  7. Quality gate after each merge                                │
-│  8. Cleanup worktrees + branches                                 │
-│  9. Final summary with results table                             │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│  TERMINAL (tmux session)                                             │
+│                                                                      │
+│  ┌────────────────────────────────────────────────────────────────┐  │
+│  │  PANE MASTER (your current Claude Opus session)                │  │
+│  │                                                                │  │
+│  │  > /swarm TASK-032,TASK-033,TASK-034                           │  │
+│  │                                                                │  │
+│  │  Role: orchestrate only, does NOT write code                   │  │
+│  │  Tools: tmux-cli launch/send/wait_idle/list_panes              │  │
+│  │  Coordination: reads status.md on disk (polling)               │  │
+│  └───────────────────────────┬────────────────────────────────────┘  │
+│                              │                                       │
+│                tmux-cli launch "zsh" (×3)                            │
+│                              │                                       │
+│            ┌─────────────────┼─────────────────┐                     │
+│            │                 │                 │                     │
+│            ▼                 ▼                 ▼                     │
+│    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐             │
+│    │  PANE 0:6.2  │  │  PANE 0:6.3  │  │  PANE 0:6.4  │             │
+│    │              │  │              │  │              │             │
+│    │  worktree:   │  │  worktree:   │  │  worktree:   │             │
+│    │  ../proj-032 │  │  ../proj-033 │  │  ../proj-034 │             │
+│    │              │  │              │  │              │             │
+│    │  claude      │  │  claude      │  │  claude      │             │
+│    │  --model     │  │  --model     │  │  --model     │             │
+│    │  sonnet      │  │  sonnet      │  │  sonnet      │             │
+│    │              │  │              │  │              │             │
+│    │  VISIBLE     │  │  VISIBLE     │  │  VISIBLE     │             │
+│    └──────┬───────┘  └──────┬───────┘  └──────┬───────┘             │
+│           │                 │                 │                     │
+│           ▼                 ▼                 ▼                     │
+│      status.md         status.md         status.md                  │
+│      (polled by         (polled by        (polled by                │
+│       master)            master)           master)                  │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+#### Workflow sequence
+
+```
+Master (Opus)            Worker 032 (Sonnet)  Worker 033 (Sonnet)  Worker 034 (Sonnet)
+    │                         │                    │                    │
+    │── git worktree add ────▶│                    │                    │
+    │── git worktree add ─────┼───────────────────▶│                    │
+    │── git worktree add ─────┼────────────────────┼───────────────────▶│
+    │                         │                    │                    │
+    │── tmux-cli launch ─────▶│ claude ready       │                    │
+    │── tmux-cli launch ──────┼───────────────────▶│ claude ready       │
+    │── tmux-cli launch ──────┼────────────────────┼───────────────────▶│ claude ready
+    │                         │                    │                    │
+    │                         │                    │                    │
+    │── send /research ──────▶│                    │                    │
+    │      (3s delay)         │                    │                    │
+    │── send /research ───────┼───────────────────▶│                    │
+    │      (3s delay)         │                    │                    │
+    │── send /research ───────┼────────────────────┼───────────────────▶│
+    │                         │                    │                    │
+    │                         │ ▓▓▓ exploring ▓▓▓  │ ▓▓▓ exploring ▓▓▓  │ ▓▓▓ exploring ▓▓▓
+    │                         │                    │                    │
+    │  ┌─ POLL LOOP 30s ──┐  │                    │                    │
+    │  │ Read status.md    │  │                    │                    │
+    │  │ Display dashboard │  │                    │                    │
+    │  │ Detect stalls     │  │                    │                    │
+    │  └───────────────────┘  │                    │                    │
+    │                         │                    │                    │
+    │── Read: research-done ─▶│                    │                    │
+    │── send /plan ──────────▶│ ▓▓▓ planning ▓▓▓   │                    │
+    │                         │                    │                    │
+    │── Read: research-done ──┼───────────────────▶│                    │
+    │── send /plan ───────────┼───────────────────▶│ ▓▓▓ planning ▓▓▓   │
+    │                         │                    │                    │
+    │── Read: plan-ready ────▶│ ✓                  │                    │
+    │── Read: plan-ready ─────┼───────────────────▶│ ✓                  │
+    │── Read: plan-ready ─────┼────────────────────┼───────────────────▶│ ✓
+    │                         │                    │                    │
+    │                         │                    │                    │
+    │══ BATCH REVIEW GATE ════│════════════════════│════════════════════│
+    │                         │                    │                    │
+    │  "All plans ready —     │ (idle)             │ (idle)             │ (idle)
+    │   review each plan.md"  │                    │                    │
+    │                         │                    │                    │
+    │◀── YOU: "approve all"   │                    │                    │
+    │                         │                    │                    │
+    │── send /implement ─────▶│ ▓▓▓ coding ▓▓▓     │                    │
+    │── send /implement ──────┼───────────────────▶│ ▓▓▓ coding ▓▓▓     │
+    │── send /implement ──────┼────────────────────┼───────────────────▶│ ▓▓▓ coding ▓▓▓
+    │                         │                    │                    │
+    │  ┌─ POLL LOOP 60s ──┐  │                    │                    │
+    │  │ Read status.md    │  │                    │                    │
+    │  │ Track Phase X/Y   │  │                    │                    │
+    │  └───────────────────┘  │                    │                    │
+    │                         │                    │                    │
+    │── Read: done ───────────┼───────────────────▶│ ✓                  │
+    │── Read: done ──────────▶│ ✓                  │                    │
+    │── Read: done ───────────┼────────────────────┼───────────────────▶│ ✓
+    │                         │                    │                    │
+    │                         │                    │                    │
+    │══ SEQUENTIAL MERGE ═════│════════════════════│════════════════════│
+    │                         │                    │                    │
+    │── merge TASK-033 ───────┼───────────────────▶│ (smallest first)   │
+    │── verify ── PASS ✓      │                    │                    │
+    │── rebase remaining ────▶│                    │                   ▶│
+    │                         │                    │                    │
+    │── merge TASK-032 ──────▶│                    │                    │
+    │── verify ── PASS ✓      │                    │                    │
+    │── rebase remaining ─────┼────────────────────┼───────────────────▶│
+    │                         │                    │                    │
+    │── merge TASK-034 ───────┼────────────────────┼───────────────────▶│
+    │── verify ── PASS ✓      │                    │                    │
+    │                         │                    │                    │
+    │                         │                    │                    │
+    │══ CLEANUP ══════════════│════════════════════│════════════════════│
+    │                         │                    │                    │
+    │── tmux-cli kill ───────▶│ ✕                  │                    │
+    │── tmux-cli kill ────────┼───────────────────▶│ ✕                  │
+    │── tmux-cli kill ────────┼────────────────────┼───────────────────▶│ ✕
+    │── worktree remove       │                    │                    │
+    │── branch delete         │                    │                    │
+    │                         │                    │                    │
+    │── FINAL SUMMARY         │                    │                    │
+    ▼                         ▼                    ▼                    ▼
+```
+
+#### Decision flow
+
+```
+                      ┌──────────────────┐
+                      │  /swarm TASK-A,B  │
+                      └────────┬─────────┘
+                               │
+                               ▼
+                      ┌──────────────────┐
+                      │ Inside tmux?     │
+                      │ tmux-cli dispo?  │
+                      └────────┬─────────┘
+                               │
+                       ┌───────┴───────┐
+                       │               │
+                      Yes              No
+                       │               │
+                       ▼               ▼
+               ┌──────────────┐  ┌─────────────────┐
+               │ Read each    │  │ STOP: "Run from │
+               │ status.md    │  │ inside tmux"    │
+               └───────┬──────┘  └─────────────────┘
+                       │
+         ┌─────────────┼─────────────┐
+         │             │             │
+      todo      research-done    plan-ready
+         │             │             │
+         ▼             ▼             ▼
+    needs R+P     needs P only   skip to gate
+         │             │          (no pane)
+         └──────┬──────┘
+                │
+                ▼
+        ┌──────────────┐
+        │ Create       │
+        │ worktrees    │
+        │ (or reuse    │
+        │ existing)    │
+        └───────┬──────┘
+                │
+                ▼
+        ┌──────────────┐
+        │ Launch panes │
+        │ tmux-cli     │
+        │ + claude     │
+        │ --model      │
+        │ sonnet       │
+        └───────┬──────┘
+                │
+                ▼
+        ┌──────────────┐
+        │ Send FIC     │◀───────────────────────┐
+        │ commands     │                        │
+        └───────┬──────┘                        │
+                │                               │
+                ▼                               │
+        ┌──────────────┐                        │
+        │ Poll 30s     │                        │
+        │ status.md    │                        │
+        │              │                        │
+        │ research-done│                        │
+        │ → send /plan │                        │
+        │              │                        │
+        │ 15min stall? │                        │
+        │ → WARN user  │                        │
+        └───────┬──────┘                        │
+                │ all plan-ready                │
+                ▼                               │
+   ┌────────────────────────┐                   │
+   │  BATCH REVIEW GATE     │                   │
+   │  You review all plans  │                   │
+   │  "approve" / "reject"  │                   │
+   └────────────┬───────────┘                   │
+                │                               │
+        ┌───────┴───────┐                       │
+        │               │                       │
+     approve         reject                     │
+        │               │                       │
+        ▼               └───────────────────────┘
+ ┌──────────────┐         (re-poll after revision)
+ │ Send         │
+ │ /implement   │
+ └───────┬──────┘
+         │
+         ▼
+ ┌──────────────┐
+ │ Poll 60s     │
+ │ status.md    │
+ │ Phase X/Y    │
+ │              │
+ │ 20min stall? │
+ │ → WARN user  │
+ └───────┬──────┘
+         │ all done
+         ▼
+ ┌──────────────┐
+ │ Sequential   │───────┐
+ │ merge        │       │
+ └───────┬──────┘   conflict?
+         │              │
+         ▼              ▼
+ ┌──────────────┐ ┌──────────────┐
+ │ Quality gate │ │ STOP: user   │
+ │ (auto-detect)│ │ decides      │
+ └───────┬──────┘ └──────────────┘
+         │ pass
+         ▼
+ ┌──────────────┐
+ │ Rebase       │
+ │ remaining    │
+ │ branches     │
+ └───────┬──────┘
+         │ next task or done
+         ▼
+ ┌──────────────┐
+ │ Cleanup      │
+ │ panes +      │
+ │ worktrees +  │
+ │ branches     │
+ └───────┬──────┘
+         │
+         ▼
+ ┌──────────────┐
+ │ Final        │
+ │ summary      │
+ └──────────────┘
 ```
 
 **Prerequisites:**
-- Claude Code [Agent Teams](https://docs.anthropic.com/en/docs/claude-code/agent-teams) enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var)
+- Running inside tmux
+- `tmux-cli` available in PATH
 - Clean main branch (no uncommitted changes)
 - Max 5 tasks per swarm
+
+**Error recovery:**
+- Worker pane dies → master detects via `tmux-cli list_panes`, offers relaunch/skip/abort
+- Worker stuck → stall timeout (15 min research/plan, 20 min implement), warns user
+- Master crash → workers continue in their tmux panes; re-run `/swarm` with same tasks to reconnect
 
 **Quality gate hook:**
 bmad-init includes `.claude/hooks/on-task-completed.sh` which auto-detects your project's toolchain (pnpm/yarn/npm/make/cargo/pytest) and runs the appropriate verify command before any task is marked complete.
@@ -388,16 +670,19 @@ Use `/fix` for small, well-understood bugs that affect 1-3 files. Use the full F
 Re-run `/implement TASK-XXX` in a new session. The resumption algorithm reads `status.md` to find the last completed phase and picks up from the next one.
 
 **What is `/swarm` and when should I use it?**
-`/swarm` orchestrates multiple tasks in parallel using Claude Code Agent Teams. A lead agent spawns teammate agents (one per task), each working in its own git worktree. Use it when you have 2-5 independent tasks that can be researched, planned, and implemented concurrently. It requires the `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var to be set.
+`/swarm` orchestrates multiple tasks in parallel using tmux-cli. A master Claude launches worker `claude` processes in tmux panes (one per task), each working in its own git worktree. Use it when you have 2-5 independent tasks that can be researched, planned, and implemented concurrently. It requires running inside tmux with `tmux-cli` available.
 
 **What's the difference between `/worktree` and `/swarm`?**
-`/worktree` creates a single worktree for manual parallel work — you manage each terminal and Claude session yourself. `/swarm` automates the entire process: worktree creation, agent spawning, FIC workflow coordination, review gating, sequential merge, and cleanup. Use `/worktree` for fine-grained control, `/swarm` for hands-off orchestration.
+`/worktree` creates a single worktree for manual parallel work — you manage each terminal and Claude session yourself. `/swarm` automates the entire process: worktree creation, tmux pane launching, FIC workflow coordination, review gating, sequential merge, and cleanup. Use `/worktree` for fine-grained control, `/swarm` for hands-off orchestration.
 
 **What does `/merge-task` do exactly?**
 `/merge-task` merges a completed task's branch into main with `--no-ff`, runs the quality gate, cleans up the worktree and branch, and produces a summary. If the quality gate fails, it offers to revert the merge. If there are conflicts, it stops and lets you resolve them manually.
 
+**Can I add tasks to a running swarm?**
+Yes. The master can run `/breakdown TASK-XXX "Title"` at any point during a swarm to create a new task, then set up its worktree and pane, and add it to the polling loop. This works during the review gate wait or while other workers are implementing. The max 5 workers limit still applies.
+
 **What is the quality gate hook?**
-The hook at `.claude/hooks/on-task-completed.sh` runs automatically when an Agent Teams teammate marks a task as complete. It auto-detects your project's toolchain (pnpm, yarn, npm, make, cargo, or pytest) and runs the appropriate verify/test command. If it fails, the task stays incomplete until the teammate fixes the errors.
+The hook at `.claude/hooks/on-task-completed.sh` runs automatically when a task is completed. It auto-detects your project's toolchain (pnpm, yarn, npm, make, cargo, or pytest) and runs the appropriate verify/test command. If it fails, the task stays incomplete until the errors are fixed.
 
 ## License
 
