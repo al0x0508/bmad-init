@@ -1030,7 +1030,18 @@ write_if_missing ".claude/commands/swarm.md" <<'ENDOFFILE'
 # /swarm — Parallel tmux-cli Orchestration
 
 ## Required argument
-- `$ARGUMENTS`: comma-separated list of TASK-IDs (e.g., `TASK-032,TASK-033,TASK-034`)
+- `$ARGUMENTS`: comma-separated TASK-IDs + optional flags
+  - `/swarm TASK-032,TASK-033,TASK-034`
+  - `/swarm TASK-032,TASK-033 --workers=3 --model=opus`
+
+### Argument parsing
+
+Parse `$ARGUMENTS` to extract:
+- **task_list**: all comma-separated TASK-IDs (words matching `TASK-\d+`)
+- **--workers=N**: max concurrent workers (default: **5**, range: 1-10)
+- **--model=MODEL**: worker model (default: **sonnet**, accepts: haiku, sonnet, opus)
+
+If a flag is invalid, warn and use the default.
 
 ## Instructions
 
@@ -1050,7 +1061,7 @@ Before starting, verify:
 
 ### Step 1: Resolve task list
 
-Parse `$ARGUMENTS`:
+From the parsed task_list (see Argument parsing above):
 - Split by comma: `TASK-032,TASK-033,TASK-034` → `["TASK-032", "TASK-033", "TASK-034"]`
 - Trim whitespace from each
 
@@ -1064,7 +1075,7 @@ For each task:
    - other → skip with warning: "Skipping TASK-XXX (status: [status])"
 3. Get the task title
 
-**Max 5 tasks per swarm** — if more are provided, say: "Max 5 concurrent workers. Split into batches."
+**Max workers check**: if the number of valid tasks exceeds the `--workers` limit (default 5), say: "Max [N] concurrent workers. Split into batches or increase with --workers=N (max 10)."
 
 ### Step 2: Create worktrees
 
@@ -1096,7 +1107,7 @@ Creating worktrees...
 For each task that needs research, plan, or implementation resume:
 1. `tmux-cli launch "$SHELL"` → get PANE_ID
 2. `tmux-cli send "cd ../[project-dir]-TASK-XXX" --pane=PANE_ID`
-3. `tmux-cli send "claude --dangerously-skip-permissions --model sonnet" --pane=PANE_ID`
+3. `tmux-cli send "claude --dangerously-skip-permissions --model [worker-model]" --pane=PANE_ID` (use `--model` flag value, default: sonnet)
 4. `tmux-cli wait_idle --pane=PANE_ID --idle-time=5 --timeout=60`
 5. Store mapping: TASK-XXX → { pane: PANE_ID, dir: ../[project-dir]-TASK-XXX }
 
@@ -1277,7 +1288,7 @@ To add a task to a running swarm:
 
 The master can do this at any point — during the review gate wait,
 or while other workers are implementing.
-Max 5 total workers still applies.
+The `--workers` limit still applies.
 
 ### Error handling
 
@@ -1292,7 +1303,7 @@ Max 5 total workers still applies.
 - **NO IMPLEMENTATION WITHOUT REVIEW**: all plans MUST be approved by the user
 - **SEQUENTIAL MERGE**: merge one branch at a time, rebase others after
 - **STOP ON CONFLICT**: never auto-resolve merge conflicts
-- **MAX 5 WORKERS**: refuse to launch more than 5 concurrent panes
+- **MAX WORKERS**: refuse to launch more than `--workers` concurrent panes (default 5, max 10)
 - **QUALITY GATE**: quality gate must pass on main after each merge
 - **VISIBLE WORKERS**: user can switch to any worker pane in tmux
 - **CLEANUP**: always clean up worktrees + panes when done (unless conflicts remain)
@@ -1307,7 +1318,7 @@ Within a batch, merge in this order:
 
 ### Session info
 - Context budget: long-running, keep polling reads minimal
-- Recommended model: Opus (master), Sonnet (workers via --model flag)
+- Recommended model: Opus (master), configurable for workers (default: Sonnet)
 - Coordination: filesystem (status.md), not agent messaging
 ENDOFFILE
 
