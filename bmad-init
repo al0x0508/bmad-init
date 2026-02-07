@@ -1121,6 +1121,12 @@ Launching workers...
 All workers launched. Visible in tmux — switch with Ctrl-b + arrow keys.
 ```
 
+**After all panes are launched**, redistribute them evenly:
+```bash
+tmux select-layout tiled
+```
+This ensures all panes get equal screen space regardless of creation order.
+
 ### Step 4: Send FIC commands
 
 For each task based on start phase:
