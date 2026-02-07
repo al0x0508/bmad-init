@@ -49,6 +49,8 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 
 ### For parallel work
 - `/worktree TASK-XXX` → creates a git worktree for the task
+- `/swarm TASK-032,TASK-033,...` → orchestrate N agents in parallel (Agent Teams)
+- `/merge-task TASK-XXX` → merge completed task branch to main
 
 ### Available Commands
 - `/help` → Show project state and recommended next action
@@ -62,6 +64,8 @@ write_if_missing ".claude/CLAUDE.md" <<'ENDOFFILE'
 - `/sprint` → View current sprint and next task
 - `/new-task TASK-XXX "Title"` → Create a single task manually
 - `/worktree TASK-XXX` → Create git worktree for parallel work
+- `/swarm TASK-A,TASK-B,...` → Parallel agent team orchestration
+- `/merge-task TASK-XXX` → Merge completed task branch to main
 
 ### Blocking/Unblocking a task
 To block: manually edit `tasks/TASK-XXX/status.md`, set status = `blocked`
@@ -1043,6 +1047,404 @@ To start working:
 ENDOFFILE
 
 # ============================================================
+# .claude/commands/swarm.md
+# ============================================================
+write_if_missing ".claude/commands/swarm.md" <<'ENDOFFILE'
+# /swarm — Parallel Agent Team Orchestration
+
+## Required argument
+- `$ARGUMENTS`: comma-separated list of TASK-IDs (e.g., `TASK-032,TASK-033,TASK-034`)
+
+## Instructions
+
+You are the **Lead Agent** orchestrating a parallel Agent Team (swarm).
+Your role: create worktrees, spawn teammates, coordinate the FIC workflow, and merge results.
+
+**You MUST operate in delegate mode** — you do NOT write code yourself.
+
+### Preconditions
+Before starting, verify:
+1. Agent Teams is enabled (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` env var is set)
+2. You are inside a git repository on the main branch
+3. Working tree is clean (`git status` shows no uncommitted changes)
+4. All requested tasks exist in `tasks/TASK-XXX/status.md`
+
+### Step 1: Resolve task list
+
+Parse `$ARGUMENTS`:
+- Split by comma: `TASK-032,TASK-033,TASK-034` → `["TASK-032", "TASK-033", "TASK-034"]`
+- Trim whitespace from each
+
+For each task:
+1. Read `tasks/TASK-XXX/status.md`
+2. Verify status is `todo`, `research-done`, or `plan-ready`
+3. Get the task title
+4. If status is invalid, skip the task and warn: "Skipping TASK-XXX (status: [status])"
+
+**Max 5 tasks per swarm** — if more are provided, say: "Max 5 concurrent agents. Split into batches."
+
+### Step 2: Create worktrees
+
+For each valid task:
+1. Derive branch name: `feat/[task-id-lowercase]-[slugified-title]`
+2. Derive worktree directory: `../[project-dir-name]-[TASK-ID]`
+3. Create worktree:
+   ```bash
+   git worktree add [directory] -b [branch-name]
+   ```
+4. Install dependencies in the worktree (suppress output, just check exit code)
+
+Display progress:
+```
+Creating worktrees...
+  [1/N] TASK-032 → ../project-TASK-032 (feat/task-032-title)
+  ...
+  Dependencies installed: done
+```
+
+### Step 3: Spawn teammates
+
+For each task, spawn a teammate agent:
+- **Model**: Sonnet
+- **Working directory**: the worktree created in Step 2
+- **Name**: `worker-TASK-XXX`
+
+Each teammate receives this prompt:
+```
+You are a worker agent implementing a task in its own git worktree.
+
+Task: TASK-XXX
+Working directory: ../[project-dir]-TASK-XXX
+
+When messaging the lead, use the SendMessage tool with type "message" and recipient "lead".
+You have access to all project skills (/research, /plan, /implement) from your worktree CWD.
+
+Phase 1 — Research & Plan:
+1. Run /research TASK-XXX
+2. Run /plan TASK-XXX
+3. When both are done, message the lead: "TASK-XXX plan ready for review"
+4. STOP and wait for further instructions
+
+Do NOT start implementation until explicitly told to proceed.
+```
+
+Display:
+```
+Spawning teammates...
+  worker-TASK-032 → Sonnet (research + plan)
+  worker-TASK-033 → Sonnet (research + plan)
+  ...
+
+All teammates spawned. They will research and plan in parallel.
+Estimated time: 30-60 minutes.
+```
+
+### Step 4: Monitor progress
+
+Wait for all teammates to report their plans are ready.
+Periodically check teammate status.
+
+When all plans are ready, display:
+```
+┌──────────────────────────────────────────────────────────┐
+│  BATCH REVIEW GATE                                       │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  All N plans are ready for your review:                  │
+│                                                          │
+│  1. tasks/TASK-XXX/plan.md                               │
+│  2. tasks/TASK-YYY/plan.md                               │
+│  ...                                                     │
+│                                                          │
+│  Review each plan (~10-15 min each), then tell me:       │
+│  • "approve all" — implement all tasks                   │
+│  • "approve TASK-XXX,TASK-YYY" — implement specific ones │
+│  • "reject TASK-ZZZ" — teammate revises the plan         │
+│                                                          │
+│  Take your time. No implementation starts without your   │
+│  explicit approval.                                      │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Step 5: Handle review decisions
+
+**On approve:**
+Message the approved teammates:
+```
+Your plan for TASK-XXX has been approved. Run /implement TASK-XXX now.
+```
+
+**On reject:**
+Message the rejected teammates:
+```
+Your plan for TASK-XXX needs revision. [User's feedback here].
+Please revise the plan and message me when ready.
+```
+
+### Step 6: Monitor implementation
+
+Wait for teammates to finish implementation.
+Each teammate will:
+1. Run `/implement TASK-XXX`
+2. Commit phase by phase
+3. Message lead when all phases are done
+
+### Step 7: Sequential merge
+
+When a teammate finishes, merge its branch to main **one at a time**:
+
+```bash
+git checkout main
+git pull --ff-only  # ensure main is up to date
+git merge --no-ff feat/task-xxx-title
+```
+
+**If merge succeeds:**
+1. Run the project quality gate (e.g., verify/test command)
+2. If quality gate passes → proceed
+3. If quality gate fails → STOP, notify user
+
+**If merge conflicts:**
+```
+MERGE CONFLICT on TASK-XXX
+Conflicting files:
+  - [file list]
+
+Options:
+  1. I'll show you the conflicts to resolve manually
+  2. Skip this task and continue with others
+```
+STOP and wait for user decision.
+
+**After each successful merge:**
+Rebase remaining branches on updated main:
+```bash
+cd ../[project-dir]-TASK-YYY
+git rebase main
+```
+
+### Step 8: Cleanup
+
+After all merges (or when user says stop):
+1. Remove completed worktrees:
+   ```bash
+   git worktree remove ../[project-dir]-TASK-XXX
+   ```
+2. Delete merged branches:
+   ```bash
+   git branch -d feat/task-xxx-title
+   ```
+
+### Step 9: Final summary
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  SWARM COMPLETE                                          │
+├──────────────────────────────────────────────────────────┤
+│                                                          │
+│  Results:                                                │
+│  ┌──────────┬──────────┬────────────────────────────┐    │
+│  │  Task    │  Status  │  Merge commit              │    │
+│  ├──────────┼──────────┼────────────────────────────┤    │
+│  │ TASK-XXX │ Merged   │ abc1234                    │    │
+│  │ TASK-YYY │ Merged   │ def5678                    │    │
+│  │ TASK-ZZZ │ Conflict │ needs manual resolution    │    │
+│  └──────────┴──────────┴────────────────────────────┘    │
+│                                                          │
+│  Worktrees cleaned up: N/M                               │
+│  Remaining: ../project-TASK-ZZZ (has conflicts)          │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Strict rules
+
+- **DELEGATE ONLY**: the lead agent does NOT write code
+- **NO IMPLEMENTATION WITHOUT REVIEW**: all plans MUST be approved by the user
+- **SEQUENTIAL MERGE**: merge one branch at a time, rebase others after
+- **STOP ON CONFLICT**: never auto-resolve merge conflicts
+- **MAX 5 AGENTS**: refuse to spawn more than 5 concurrent teammates
+- **QUALITY GATE**: quality gate must pass on main after each merge
+- **CLEANUP**: always clean up worktrees when done (unless conflicts remain)
+
+### Merge priority order
+
+Within a batch, merge in this order:
+1. Smallest tasks first (fewer files changed → less conflict risk)
+2. Higher priority tasks next
+3. Tasks touching shared files last
+
+### Session info
+- Context budget: unlimited (lead agent, long-running)
+- Recommended model: Opus (lead), Sonnet (teammates)
+- Mode: delegate
+ENDOFFILE
+
+# ============================================================
+# .claude/commands/merge-task.md
+# ============================================================
+write_if_missing ".claude/commands/merge-task.md" <<'ENDOFFILE'
+# /merge-task — Merge Completed Task Branch to Main
+
+## Required argument
+- `$ARGUMENTS`: task identifier (e.g., TASK-032)
+
+## Instructions
+
+You merge a completed task's feature branch into main, verify quality, and clean up.
+
+### Preconditions
+Before starting, verify:
+1. `tasks/$ARGUMENTS/status.md` exists — if not, say: "Task not found."
+2. Task status is `done` — if not, say: "Task status is [status]. Only `done` tasks can be merged. Run `/implement $ARGUMENTS` first."
+3. A worktree or branch exists for this task
+
+### Step 1: Identify the branch
+
+1. Read `tasks/$ARGUMENTS/status.md` to get the task title
+2. Derive branch name: `feat/[task-id-lowercase]-[slugified-title]`
+3. Verify the branch exists: `git branch --list [branch-name]`
+4. If branch doesn't exist, check worktrees: `git worktree list`
+
+### Step 2: Pre-merge checks
+
+1. Switch to main:
+   ```bash
+   git checkout main
+   ```
+2. Ensure main is up to date:
+   ```bash
+   git pull --ff-only
+   ```
+3. Preview the merge:
+   ```bash
+   git log main..[branch-name] --oneline
+   git diff main...[branch-name] --stat
+   ```
+
+Display:
+```
+Merging: $ARGUMENTS — [title]
+Branch:  [branch-name]
+Commits: [N commits]
+Files:   [N files changed]
+
+Proceed with merge? (showing diff summary above)
+```
+
+Wait for user confirmation.
+
+### Step 3: Merge
+
+```bash
+git merge --no-ff [branch-name]
+```
+
+**If conflicts occur:**
+```
+MERGE CONFLICT on $ARGUMENTS
+Conflicting files:
+  - [file list from git status]
+
+Run `git diff` to see the conflicts.
+Resolve them, then run: git add [files] && git commit
+```
+STOP and let the user resolve.
+
+### Step 4: Quality gate
+
+Run the project quality gate (e.g., verify/test command).
+
+- If passes → continue
+- If fails → warn user, do NOT proceed with cleanup
+  ```
+  WARNING: Quality gate failed after merge.
+  The merge commit is on main but quality checks fail.
+  Options:
+    1. Fix the issues now
+    2. Revert the merge: git revert -m 1 HEAD
+  ```
+
+### Step 5: Cleanup
+
+1. Remove worktree if it exists:
+   ```bash
+   git worktree remove ../[project-dir]-$ARGUMENTS
+   ```
+2. Delete the branch:
+   ```bash
+   git branch -d [branch-name]
+   ```
+3. Update sprint board: in `docs/current-sprint.md`, verify task is in `### Done`
+
+### Step 6: Report
+
+```
+Merge complete: $ARGUMENTS — [title]
+  Merge commit: [hash]
+  Branch:       [branch-name] (deleted)
+  Worktree:     ../[dir] (removed)
+  Quality gate: passed
+```
+
+### Rules
+- **ALWAYS merge with --no-ff** (preserves branch history)
+- **NEVER force-push** or rewrite main history
+- **STOP on conflicts** — let the user resolve
+- **Quality gate mandatory** — must pass before cleanup
+- **Clean up after merge** — remove worktree and branch
+
+### Session info
+- Context budget: < 15%
+- Recommended model: any
+ENDOFFILE
+
+# ============================================================
+# .claude/hooks/on-task-completed.sh
+# ============================================================
+write_if_missing ".claude/hooks/on-task-completed.sh" <<'ENDOFFILE'
+#!/bin/bash
+# Quality gate: verify code compiles and passes tests before task completion
+# Called by Claude Code Agent Teams hook: TaskCompleted
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+# Auto-detect verify command
+if [ -f "package.json" ]; then
+  if command -v pnpm &>/dev/null && [ -f "pnpm-lock.yaml" ]; then
+    VERIFY_CMD="pnpm verify"
+  elif command -v yarn &>/dev/null && [ -f "yarn.lock" ]; then
+    VERIFY_CMD="yarn verify"
+  elif command -v npm &>/dev/null; then
+    VERIFY_CMD="npm run verify"
+  fi
+elif [ -f "Makefile" ] && grep -q "^verify:" Makefile; then
+  VERIFY_CMD="make verify"
+elif [ -f "Cargo.toml" ]; then
+  VERIFY_CMD="cargo test"
+elif [ -f "pyproject.toml" ] || [ -f "setup.py" ]; then
+  VERIFY_CMD="python -m pytest"
+fi
+
+if [ -z "${VERIFY_CMD:-}" ]; then
+  echo "No verify command detected. Skipping quality gate."
+  exit 0
+fi
+
+echo "Running quality gate ($VERIFY_CMD)..."
+$VERIFY_CMD 2>&1 || {
+  echo "BLOCKED: $VERIFY_CMD failed. Fix errors before completing." >&2
+  exit 2
+}
+
+echo "Quality gate passed."
+exit 0
+ENDOFFILE
+chmod +x "$TARGET/.claude/hooks/on-task-completed.sh" 2>/dev/null || true
+
+# ============================================================
 # .claude/commands/help.md
 # ============================================================
 write_if_missing ".claude/commands/help.md" <<'ENDOFFILE'
@@ -1096,6 +1498,8 @@ Quick reference:
   /sprint             View sprint dashboard
   /new-task           Create a task manually
   /worktree TASK-XXX  Create git worktree for parallel work
+  /swarm TASK-A,B,C   Parallel agent team orchestration
+  /merge-task TASK-XXX Merge completed task branch to main
   /fix "description"  Quick bug fix (bypasses full FIC cycle)
   /help               This command
 ```
@@ -1278,6 +1682,7 @@ ENDOFFILE
 mkdir -p "$TARGET/docs/components"
 mkdir -p "$TARGET/tasks"
 mkdir -p "$TARGET/src"
+mkdir -p "$TARGET/.claude/hooks"
 
 # .gitkeep for empty dirs
 for dir in docs/components tasks src; do
@@ -1296,3 +1701,6 @@ echo "  2. cd $TARGET && claude"
 echo "  3. /architect           → generate architecture"
 echo "  4. /breakdown           → generate all tasks"
 echo "  5. /sprint              → see what to do next"
+echo ""
+echo "For parallel work with Agent Teams:"
+echo "  /swarm TASK-A,TASK-B    → orchestrate N agents in parallel"
